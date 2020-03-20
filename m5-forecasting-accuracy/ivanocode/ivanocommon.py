@@ -1,4 +1,6 @@
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime
 
 def overlay_x_axis(fig, ax, data):
     from pandas.core.series import Series
@@ -14,7 +16,8 @@ def overlay_x_axis(fig, ax, data):
     newax.xaxis.set_label_position('bottom')
     newax.spines['bottom'].set_position(('outward', 20))
 
-def plot_item_series(df, itemid):
+def plot_item_series(df, id):
+    subset = df.query(f'id == "{id}"')
     sales = subset['sales'].values
     dates = [dt.date() for dt in subset['day_date'].dt.to_pydatetime()]
     xaxis_data = dates
