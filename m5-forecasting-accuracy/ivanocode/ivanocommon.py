@@ -50,3 +50,29 @@ def plot_item_series(df, id):
     ax.legend(['series']+
               prices_legend+
                [stats])
+
+def drop_level(df, level, axis, inplace=False):
+    if axis == 1:
+        assert hasattr(df.columns, 'levels') and len(df.columns.levels) > level
+    if axis == 0:
+        raise ValueError("Not supported")
+
+    if not inplace:
+        df = df.copy()
+
+    def remove_empty(cols):
+        return filter(lambda col: len(col) >0, cols)
+
+    df.columns = ['_'.join(remove_empty(col)) for col in df.columns]
+    return df
+
+# Note to self: dense rank looks like an easier way to do this
+def count_flips(col):
+    """Counts flips between na==zero and regular numbers"""
+    return (col
+     .fillna(0)
+     .clip(0,1)
+     .diff()
+     .fillna(0)
+     .astype(int)
+     .sum())
