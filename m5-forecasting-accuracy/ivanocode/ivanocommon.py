@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime
+from IPython.display import display
 
 def overlay_x_axis(fig, ax, data):
     from pandas.core.series import Series
