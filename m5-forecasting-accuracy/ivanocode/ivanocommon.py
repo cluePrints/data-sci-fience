@@ -77,3 +77,15 @@ def count_flips(col):
      .fillna(0)
      .astype(int)
      .sum())
+
+from IPython.display import display
+def no_op(*args, **kwargs):
+    pass
+
+def display_log(name, val):
+    display(val)
+
+def capture_log_into(result_dict):
+    def _capture(name, val):
+        result_dict[name] = val.copy()
+    return _capture
