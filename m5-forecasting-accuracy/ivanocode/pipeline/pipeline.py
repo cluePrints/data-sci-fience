@@ -1,6 +1,7 @@
 from sklearn.pipeline import Pipeline
 import pandas as pd
 import numpy as np
+import matplotlib
 
 raw = 'raw'
 processed = 'processed'
@@ -89,6 +90,7 @@ def join_w_prices(partition):
     return partition
 
 from fastai.tabular import *
+
 def model_as_tabular(df_sales_train_melt):
     df_sample = df_sales_train_melt.query('sales_dollars > 0')
 
@@ -107,8 +109,28 @@ def model_as_tabular(df_sales_train_melt):
     sales_range = df_sales_train_melt.agg({dep_var: ['min', 'max']})
     learn = tabular_learner(data, layers=[1000,100], emb_szs=None, metrics=rmse, 
                         y_range=sales_range[dep_var].values)
-    learn.lr_find(start_lr=1e0, end_lr=1e5, num_it=10)
-    learn.recorder.plot()
+    #learn.lr_find()
+    #fig = learn.recorder.plot(return_fig=True)
+    #fig.savefig('lr_find.png')
+    learn.fit_one_cycle(5, 1e-1)
+    fig = learn.recorder.plot_losses(return_fig=True)
+    fig.savefig('loss_log.png')
+
+    """
+    the above is pretty unstable, still we sort of got it to overfit slightly
+    epoch     train_loss  valid_loss  root_mean_squared_error  time    
+    0         83.365913   53.201424   7.188121                 00:00                                                                                      
+    1         56.507870   55.011505   7.313859                 00:00                                                                                      
+    2         48.014706   55.011673   7.313872                 00:00                                                                                      
+    3         44.242149   55.001785   7.313148                 00:00                                                                                      
+    4         42.347946   57.570885   7.462979                 00:00 
+    epoch     train_loss  valid_loss  root_mean_squared_error  time    
+    0         99.312691   88.176826   9.289624                 00:00                                                                                      
+    1         53.812771   45.480507   6.625162                 00:00                                                                                      
+    2         35.418938   19.952007   4.353195                 00:00                                                                                      
+    3         23.099392   17.516432   4.008787                 00:00                                                                                      
+    4         17.082275   17.641117   4.019526                 00:00 
+    """
 
 sales_series = read_series_sample()
 sales_series = melt_sales_series(sales_series)
