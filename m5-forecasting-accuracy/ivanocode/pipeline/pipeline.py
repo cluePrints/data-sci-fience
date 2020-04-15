@@ -87,6 +87,7 @@ def join_w_prices(partition):
     )
     partition['sell_price'] = partition['sell_price'].astype('float32')
     partition['sales_dollars'] = (partition['sales'] * partition['sell_price']).astype('float32')
+    partition.fillna({'sales_dollars': 0}, inplace=True)
     return partition
 
 from fastai.tabular import *
