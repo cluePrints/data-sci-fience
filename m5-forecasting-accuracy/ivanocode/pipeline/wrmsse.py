@@ -1,3 +1,5 @@
+from ivanocode.ivanocommon import drop_level
+import pandas as pd
 aggregation_levels = {
     11: ['item_id', 'state_id'],
     10: ['item_id'],
@@ -57,7 +59,7 @@ def with_aggregate_series(df, agg_levels=aggregation_levels):
     return df
 
 def wrmsse_total(df_train, df_valid_w_aggs, df_pred_w_aggs, display=no_op):
-    cols = ['id', 'day_id_rel', 'sales', 'sales_$', 'agg_level']
+    cols = ['id', 'day_id_rel', 'sales', 'sales_dollars', 'agg_level']
     t = (df_valid_w_aggs[cols]
             .merge(df_pred_w_aggs[cols], 
                    on=['id', 'day_id_rel'], 
@@ -67,16 +69,16 @@ def wrmsse_total(df_train, df_valid_w_aggs, df_pred_w_aggs, display=no_op):
 
     t = t.groupby(['id', 'agg_level_valid'], as_index=False).agg({
         'daily_sales_err^2': lambda x: x.sum(),
-        'sales_$_valid': 'sum'
+        'sales_dollars_valid': 'sum'
     }).rename({
         'daily_sales_err^2': 'sales_err^2_sum'
     }, axis=1)
     display("t2", t)
     t['agg_weight'] = (t.groupby('agg_level_valid')
-        ['sales_$_valid']
+        ['sales_dollars_valid']
        .transform(lambda x: x.sum())
     )
-    t['series_weight'] = t['sales_$_valid']/t['agg_weight']
+    t['series_weight'] = t['sales_dollars_valid']/t['agg_weight']
 
     diff_sum_squared = lambda x: x.diff().pow(2).sum()
     diff_sum_squared.__name__ = 'diff_sum_squared'
@@ -110,7 +112,7 @@ def wrmsse_total(df_train, df_valid_w_aggs, df_pred_w_aggs, display=no_op):
 
     # TODO: rmsse est for series with no sales - will not be a problem when coming from trn
     # TODO: failing fast might also be a better idea than hiding inconsistent test data 
-    t.loc[t['sales_$_valid'] == 0, 'rmsse'] = 0
+    t.loc[t['sales_dollars_valid'] == 0, 'rmsse'] = 0
     t['wrmsse'] = t['rmsse']*t['series_weight']
 
     wrmsse_total = t['wrmsse'].sum()/n_aggs

@@ -1,3 +1,4 @@
+from ivanocode.pipeline.wrmsse import wrmsse_total, with_aggregate_series
 from sklearn.pipeline import Pipeline
 import pandas as pd
 import numpy as np
@@ -113,7 +114,7 @@ def model_as_tabular(df_sales_train_melt):
     #learn.lr_find()
     #fig = learn.recorder.plot(return_fig=True)
     #fig.savefig('lr_find.png')
-    learn.fit_one_cycle(5, 1e-1)
+    learn.fit_one_cycle(1, 1e-1)
     fig = learn.recorder.plot_losses(return_fig=True)
     fig.savefig('loss_log.png')
 
@@ -132,10 +133,27 @@ def model_as_tabular(df_sales_train_melt):
     3         23.099392   17.516432   4.008787                 00:00                                                                                      
     4         17.082275   17.641117   4.019526                 00:00 
     """
+    return learn, valid_idx
 
 sales_series = read_series_sample()
 sales_series = melt_sales_series(sales_series)
 sales_series = extract_day_ids(sales_series)
 sales_series = join_w_calendar(sales_series)
 sales_series = join_w_prices(sales_series)
-model_as_tabular(sales_series)
+learn, valid_idx = model_as_tabular(sales_series)
+val = sales_series[sales_series.index.isin(valid_idx)]
+trn = sales_series[~sales_series.index.isin(valid_idx)]
+preds, y = learn.get_preds(DatasetType.Valid)
+
+pred = val.copy()
+pred['sales_dollars'] = y
+pred['sales'] = pred['sales_dollars'] / pred['sell_price']
+pred['sales'].fillna(0, inplace=True)
+val_w_aggs = with_aggregate_series(val.copy())
+trn_w_aggs = with_aggregate_series(trn.copy())
+pred_w_aggs = with_aggregate_series(pred.copy())
+score = wrmsse_total(
+    trn_w_aggs,
+    val_w_aggs,
+    pred_w_aggs
+)
