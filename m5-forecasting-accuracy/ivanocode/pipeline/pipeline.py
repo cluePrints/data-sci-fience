@@ -93,11 +93,58 @@ def join_w_prices(partition):
 
 from fastai.tabular import *
 
+def _wrmsse(y, val, trn):
+    from torch import tensor
+    if (len(y) < len(val)):
+        return tensor(0.)
+
+    pred = val.copy()
+    pred['sales_dollars'] = y
+    pred['sales'] = pred['sales_dollars'] / pred['sell_price']
+    pred['sales'].fillna(0, inplace=True)
+    val_w_aggs = with_aggregate_series(val.copy())
+    trn_w_aggs = with_aggregate_series(trn.copy())
+    pred_w_aggs = with_aggregate_series(pred.copy())
+    score = wrmsse_total(
+        trn_w_aggs,
+        val_w_aggs,
+        pred_w_aggs
+    )
+    return score
+
+from fastai.callbacks import *
+# mega workaroundish way of plugging a metric func designed to work with all the data to run after each epoch 
+# fast.ai is designed around per batch metrics + aggregating them
+class MyMetrics(LearnerCallback):
+    # should run before the recorder
+    _order = -30
+    def __init__(self, learn, trn, val):
+        super().__init__(learn)
+        self.trn = trn
+        self.val = val
+        self.learn = learn
+
+    def on_train_begin(self, **kwargs):
+        self.learn.recorder.add_metric_names(['wrmsse'])
+    
+    def on_epoch_end(self, last_metrics, **kwargs):
+        rec = self.learn.recorder
+        preds, y = self.learn.get_preds(DatasetType.Valid)
+        self.learn.recorder = rec
+        score = _wrmsse(y, self.val, self.trn)
+        return {'last_metrics': last_metrics + [score]}
+
 def model_as_tabular(df_sales_train_melt):
     df_sample = df_sales_train_melt.query('sales_dollars > 0')
 
     day_ids = list(sorted(df_sample['day_id'].unique()))
     valid_idx = np.flatnonzero(df_sample['day_id'] > 1000)
+
+    val_mask = df_sales_train_melt.index.isin(valid_idx)
+    val = sales_series[val_mask]
+    trn = sales_series[~val_mask]
+
+    my_metrics_cb = partial(MyMetrics, val=val, trn=trn)
 
     procs = [FillMissing, Categorify, Normalize]
     dep_var = 'sales_dollars'
@@ -109,8 +156,8 @@ def model_as_tabular(df_sales_train_melt):
                                     procs=procs, cat_names=cat_names)
 
     sales_range = df_sales_train_melt.agg({dep_var: ['min', 'max']})
-    learn = tabular_learner(data, layers=[1000,100], emb_szs=None, metrics=rmse, 
-                        y_range=sales_range[dep_var].values)
+    learn = tabular_learner(data, layers=[1000,100], emb_szs=None, metrics=[rmse], 
+                        y_range=sales_range[dep_var].values, callback_fns=[my_metrics_cb])
     #learn.lr_find()
     #fig = learn.recorder.plot(return_fig=True)
     #fig.savefig('lr_find.png')
@@ -141,19 +188,4 @@ sales_series = extract_day_ids(sales_series)
 sales_series = join_w_calendar(sales_series)
 sales_series = join_w_prices(sales_series)
 learn, valid_idx = model_as_tabular(sales_series)
-val = sales_series[sales_series.index.isin(valid_idx)]
-trn = sales_series[~sales_series.index.isin(valid_idx)]
 preds, y = learn.get_preds(DatasetType.Valid)
-
-pred = val.copy()
-pred['sales_dollars'] = y
-pred['sales'] = pred['sales_dollars'] / pred['sell_price']
-pred['sales'].fillna(0, inplace=True)
-val_w_aggs = with_aggregate_series(val.copy())
-trn_w_aggs = with_aggregate_series(trn.copy())
-pred_w_aggs = with_aggregate_series(pred.copy())
-score = wrmsse_total(
-    trn_w_aggs,
-    val_w_aggs,
-    pred_w_aggs
-)
