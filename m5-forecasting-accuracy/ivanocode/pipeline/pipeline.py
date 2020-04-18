@@ -9,17 +9,20 @@ processed = 'processed'
 submissions = 'submissions'
 tmp = 'tmp'
 
+n_days_total = 1913
+trn_days = 1910
 n_total_series = 30490
+n_sample_series = 10
 
 from joblib import Memory
 location = './tmp'
 memory = Memory(location, verbose=5)
 
 @memory.cache
-def read_series_sample(n_sample_series = 10):
+def read_series_sample(n = 10):
     sample_idx = set(np.random.choice(
-        range(1, n_total_series + 1),
-        n_sample_series
+        range(1, n + 1),
+        n
     ))
 
     # header
@@ -48,16 +51,16 @@ def melt_sales_series(df_sales_train):
 
 @memory.cache
 def extract_day_ids(df_sales_train_melt):
-    sales_columns = [f'd_{col}' for col in range(1,1913+1)]
+    sales_columns = [f'd_{col}' for col in range(1, n_days_total+1)]
     mapping = {col: int(col.split('_')[1]) for col in sales_columns}
     df_sales_train_melt['day_id'] = df_sales_train_melt['day_id'].map(mapping)
 
     import datetime
     d_1_date = pd.to_datetime('2011-01-29')
-    mapping = {day:(d_1_date + datetime.timedelta(days=day-1)) for day in range(1, 1913+1)}
+    mapping = {day:(d_1_date + datetime.timedelta(days=day-1)) for day in range(1, n_days_total+1)}
     df_sales_train_melt['day_date'] = df_sales_train_melt['day_id'].map(mapping)
 
-    mapping = {day:str((d_1_date + datetime.timedelta(days=day-1)).date()) for day in range(1, 1913+1)}
+    mapping = {day:str((d_1_date + datetime.timedelta(days=day-1)).date()) for day in range(1, n_days_total+1)}
     # gonna need it for joining with calendars & stuff
     df_sales_train_melt['day_date_str'] = df_sales_train_melt['day_id'].map(mapping)
 
@@ -92,16 +95,17 @@ def join_w_prices(partition):
     return partition
 
 from fastai.tabular import *
+from IPython.display import display
+
 
 def _wrmsse(y, val, trn):
-    from torch import tensor
-    if (len(y) < len(val)):
-        return tensor(0.)
-
     pred = val.copy()
     pred['sales_dollars'] = y
+    display(pd.DataFrame({'y_pred': y, 'y_val': val['sales_dollars']}).transpose())
+    # TODO: rounding differently might be important for sporadic sales on lower-volume items
     pred['sales'] = pred['sales_dollars'] / pred['sell_price']
     pred['sales'].fillna(0, inplace=True)
+    pred['sales'] = pred['sales'].astype('int')
     val_w_aggs = with_aggregate_series(val.copy())
     trn_w_aggs = with_aggregate_series(trn.copy())
     pred_w_aggs = with_aggregate_series(pred.copy())
@@ -126,23 +130,23 @@ class MyMetrics(LearnerCallback):
 
     def on_train_begin(self, **kwargs):
         self.learn.recorder.add_metric_names(['wrmsse'])
+        pass
     
     def on_epoch_end(self, last_metrics, **kwargs):
         rec = self.learn.recorder
-        preds, y = self.learn.get_preds(DatasetType.Valid)
+        preds, y_val = self.learn.get_preds(DatasetType.Valid)
+        y_pred = preds.numpy().flatten()
         self.learn.recorder = rec
-        score = _wrmsse(y, self.val, self.trn)
+        score = _wrmsse(y_pred, self.val, self.trn)
         return {'last_metrics': last_metrics + [score]}
 
 def model_as_tabular(df_sales_train_melt):
-    df_sample = df_sales_train_melt.query('sales_dollars > 0')
+    df_sample = df_sales_train_melt.query('sales_dollars > 0').reset_index(drop=True)
+    valid_idx = np.flatnonzero(df_sample['day_id'] > trn_days)
 
-    day_ids = list(sorted(df_sample['day_id'].unique()))
-    valid_idx = np.flatnonzero(df_sample['day_id'] > 1000)
-
-    val_mask = df_sales_train_melt.index.isin(valid_idx)
-    val = sales_series[val_mask]
-    trn = sales_series[~val_mask]
+    val_mask = df_sample.index.isin(valid_idx)
+    val = df_sample[val_mask]
+    trn = df_sample[~val_mask]
 
     my_metrics_cb = partial(MyMetrics, val=val, trn=trn)
 
@@ -156,12 +160,16 @@ def model_as_tabular(df_sales_train_melt):
                                     procs=procs, cat_names=cat_names)
 
     sales_range = df_sales_train_melt.agg({dep_var: ['min', 'max']})
-    learn = tabular_learner(data, layers=[1000,100], emb_szs=None, metrics=[rmse], 
-                        y_range=sales_range[dep_var].values, callback_fns=[my_metrics_cb])
-    #learn.lr_find()
-    #fig = learn.recorder.plot(return_fig=True)
-    #fig.savefig('lr_find.png')
-    learn.fit_one_cycle(1, 1e-1)
+    learn = tabular_learner(data, layers=[1000,1000], emb_szs=None, metrics=[rmse], 
+                        y_range=sales_range[dep_var].values, callback_fns=[my_metrics_cb],
+                        use_bn=False,
+                        wd=0)
+    # Note to self: default wd seem to big - results converged to basically nothing in the first ep
+    learn.lr_find()
+    fig = learn.recorder.plot(return_fig=True)
+    fig.savefig('lr_find.png')
+    !open lr_find.png
+    learn.fit_one_cycle(5, 1e1)
     fig = learn.recorder.plot_losses(return_fig=True)
     fig.savefig('loss_log.png')
 
@@ -180,12 +188,11 @@ def model_as_tabular(df_sales_train_melt):
     3         23.099392   17.516432   4.008787                 00:00                                                                                      
     4         17.082275   17.641117   4.019526                 00:00 
     """
-    return learn, valid_idx
+    return learn, trn, val
 
-sales_series = read_series_sample()
+sales_series = read_series_sample(n_sample_series)
 sales_series = melt_sales_series(sales_series)
 sales_series = extract_day_ids(sales_series)
 sales_series = join_w_calendar(sales_series)
 sales_series = join_w_prices(sales_series)
-learn, valid_idx = model_as_tabular(sales_series)
-preds, y = learn.get_preds(DatasetType.Valid)
+learn, trn, val = model_as_tabular(sales_series)
