@@ -144,6 +144,7 @@ def model_as_tabular(df_sales_train_melt):
     df_sample = df_sales_train_melt.query('sales_dollars > 0').reset_index(drop=True)
     valid_idx = np.flatnonzero(df_sample['day_id'] > trn_days)
 
+    # TODO: this in fact is rather fragile and won't work without reset index above, can I do this differently?
     val_mask = df_sample.index.isin(valid_idx)
     val = df_sample[val_mask]
     trn = df_sample[~val_mask]
