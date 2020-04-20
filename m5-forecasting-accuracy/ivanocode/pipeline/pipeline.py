@@ -10,13 +10,13 @@ submissions = 'submissions'
 tmp = 'tmp'
 
 n_days_total = 1913
-trn_days = 1910
+trn_days = 1900
 n_total_series = 30490
-n_sample_series = 10
+n_sample_series = 500
 
 from joblib import Memory
 location = './tmp'
-memory = Memory(location, verbose=5)
+memory = Memory(location, verbose=1)
 
 @memory.cache
 def read_series_sample(n = 10):
@@ -101,7 +101,6 @@ from IPython.display import display
 def _wrmsse(y, val, trn):
     pred = val.copy()
     pred['sales_dollars'] = y
-    display(pd.DataFrame({'y_pred': y, 'y_val': val['sales_dollars']}).transpose())
     # TODO: rounding differently might be important for sporadic sales on lower-volume items
     pred['sales'] = pred['sales_dollars'] / pred['sell_price']
     pred['sales'].fillna(0, inplace=True)
@@ -133,12 +132,13 @@ class MyMetrics(LearnerCallback):
         pass
     
     def on_epoch_end(self, last_metrics, **kwargs):
+        # TODO: collect progress for a single val batch and make it available for display
+        # display(pd.DataFrame({'y_pred': y, 'y_val': val['sales_dollars']}).transpose())
         rec = self.learn.recorder
         preds, y_val = self.learn.get_preds(DatasetType.Valid)
         y_pred = preds.numpy().flatten()
         self.learn.recorder = rec
-        # TODO: just a test score = _wrmsse(y_pred, self.val, self.trn)
-        score = -1
+        score = _wrmsse(y_pred, self.val, self.trn)
         return {'last_metrics': last_metrics + [score]}
     
 class SingleBatchProgressTracker(LearnerCallback):
@@ -161,7 +161,7 @@ class SingleBatchProgressTracker(LearnerCallback):
         score = self.metric(self.y_true, y_model)
         return {'last_metrics': last_metrics + [score]}
 
-def model_as_tabular(df_sales_train_melt):
+def model_as_tabular(df_sales_train_melt, lr_find=False):
     non_zero = df_sales_train_melt.query('sales_dollars > 0').reset_index(drop=True)
     valid_idx = np.flatnonzero(non_zero['day_id'] > trn_days)
 
@@ -181,20 +181,23 @@ def model_as_tabular(df_sales_train_melt):
 
     path ='./tmp'
     data = TabularDataBunch.from_df(path, non_zero[cols], dep_var, valid_idx=valid_idx,
-                                    bs=64,
+                                    bs=256,
                                     procs=procs, cat_names=cat_names)
 
     sales_range = df_sales_train_melt.agg({dep_var: ['min', 'max']})
-    learn = tabular_learner(data, layers=[1000,1000], emb_szs=None, metrics=[rmse], 
-                        y_range=sales_range[dep_var].values, callback_fns=[my_metrics_cb, single_batch_metric],
-                        use_bn=False,
+    learn = tabular_learner(data, layers=[200,200,20,20], emb_szs=None, metrics=[rmse], 
+                        y_range=sales_range[dep_var].values, callback_fns=[
+                            my_metrics_cb, 
+                            single_batch_metric],
+                        use_bn=True,
                         wd=0)
     # Note to self: default wd seem to big - results converged to basically nothing in the first ep
-    learn.lr_find()
-    fig = learn.recorder.plot(return_fig=True)
-    fig.savefig('lr_find.png')
-    !open lr_find.png
-    learn.fit_one_cycle(3, 1e0)
+    if lr_find:
+        learn.lr_find()
+        fig = learn.recorder.plot(return_fig=True)
+        fig.savefig('lr_find.png')
+        !open lr_find.png
+    learn.fit_one_cycle(5, 1e-1)
     fig = learn.recorder.plot_losses(return_fig=True)
     fig.savefig('loss_log.png')
 
