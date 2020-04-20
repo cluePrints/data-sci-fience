@@ -137,19 +137,42 @@ class MyMetrics(LearnerCallback):
         preds, y_val = self.learn.get_preds(DatasetType.Valid)
         y_pred = preds.numpy().flatten()
         self.learn.recorder = rec
-        score = _wrmsse(y_pred, self.val, self.trn)
+        # TODO: just a test score = _wrmsse(y_pred, self.val, self.trn)
+        score = -1
+        return {'last_metrics': last_metrics + [score]}
+    
+class SingleBatchProgressTracker(LearnerCallback):
+    # should run before the recorder
+    _order = -31
+    def __init__(self, learn, metric, metric_name):
+        self.learn = learn
+        self.batch = learn.data.one_batch(DatasetType.Train)
+        self.x = self.batch[0]
+        self.y_true = self.batch[1]
+        self.metric = metric
+        self.metric_name = metric_name
+        
+    def on_train_begin(self, **kwargs):
+        self.learn.recorder.add_metric_names([self.metric_name])
+        pass
+        
+    def on_epoch_end(self, last_metrics, **kwargs):
+        y_model = self.learn.model.forward(*self.x)
+        score = self.metric(self.y_true, y_model)
         return {'last_metrics': last_metrics + [score]}
 
 def model_as_tabular(df_sales_train_melt):
-    df_sample = df_sales_train_melt.query('sales_dollars > 0').reset_index(drop=True)
-    valid_idx = np.flatnonzero(df_sample['day_id'] > trn_days)
+    non_zero = df_sales_train_melt.query('sales_dollars > 0').reset_index(drop=True)
+    valid_idx = np.flatnonzero(non_zero['day_id'] > trn_days)
 
     # TODO: this in fact is rather fragile and won't work without reset index above, can I do this differently?
-    val_mask = df_sample.index.isin(valid_idx)
-    val = df_sample[val_mask]
-    trn = df_sample[~val_mask]
+    val_mask = non_zero.index.isin(valid_idx)
+    val = non_zero[val_mask]
+    trn = non_zero[~val_mask]
+    print(f"sample: {len(df_sales_train_melt)} non_zero: {len(non_zero)} trn: {len(trn)} val: {len(val)}")
 
     my_metrics_cb = partial(MyMetrics, val=val, trn=trn)
+    single_batch_metric = partial(SingleBatchProgressTracker, metric=rmse, metric_name='example_batch_rmse')
 
     procs = [FillMissing, Categorify, Normalize]
     dep_var = 'sales_dollars'
@@ -157,12 +180,13 @@ def model_as_tabular(df_sales_train_melt):
     cols = cat_names + ['sell_price'] + [dep_var]
 
     path ='./tmp'
-    data = TabularDataBunch.from_df(path, df_sample[cols], dep_var, valid_idx=valid_idx,
+    data = TabularDataBunch.from_df(path, non_zero[cols], dep_var, valid_idx=valid_idx,
+                                    bs=64,
                                     procs=procs, cat_names=cat_names)
 
     sales_range = df_sales_train_melt.agg({dep_var: ['min', 'max']})
     learn = tabular_learner(data, layers=[1000,1000], emb_szs=None, metrics=[rmse], 
-                        y_range=sales_range[dep_var].values, callback_fns=[my_metrics_cb],
+                        y_range=sales_range[dep_var].values, callback_fns=[my_metrics_cb, single_batch_metric],
                         use_bn=False,
                         wd=0)
     # Note to self: default wd seem to big - results converged to basically nothing in the first ep
@@ -170,7 +194,7 @@ def model_as_tabular(df_sales_train_melt):
     fig = learn.recorder.plot(return_fig=True)
     fig.savefig('lr_find.png')
     !open lr_find.png
-    learn.fit_one_cycle(5, 1e1)
+    learn.fit_one_cycle(3, 1e0)
     fig = learn.recorder.plot_losses(return_fig=True)
     fig.savefig('loss_log.png')
 
