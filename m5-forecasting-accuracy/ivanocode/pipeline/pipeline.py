@@ -12,7 +12,7 @@ tmp = 'tmp'
 n_days_total = 1913
 trn_days = 1900
 n_total_series = 30490
-n_sample_series = 500
+n_sample_series = 50
 
 from joblib import Memory
 location = './tmp'
@@ -97,14 +97,18 @@ def join_w_prices(partition):
 from fastai.tabular import *
 from IPython.display import display
 
-
-def _wrmsse(y, val, trn):
-    pred = val.copy()
-    pred['sales_dollars'] = y
+def _transform_target(preds, df):
+    y_pred = preds.numpy().flatten()
+    df['sales_dollars'] = y_pred
+    df['sales'] = df['sales_dollars'] / df['sell_price']
     # TODO: rounding differently might be important for sporadic sales on lower-volume items
-    pred['sales'] = pred['sales_dollars'] / pred['sell_price']
-    pred['sales'].fillna(0, inplace=True)
-    pred['sales'] = pred['sales'].astype('int')
+    df['sales'].fillna(0, inplace=True)
+    df['sales'] = df['sales'].astype('int')
+
+def _wrmsse(preds, val, trn):
+    pred = val.copy()
+    _transform_target(preds, df=pred)
+
     val_w_aggs = with_aggregate_series(val.copy())
     trn_w_aggs = with_aggregate_series(trn.copy())
     pred_w_aggs = with_aggregate_series(pred.copy())
@@ -136,9 +140,8 @@ class MyMetrics(LearnerCallback):
         # display(pd.DataFrame({'y_pred': y, 'y_val': val['sales_dollars']}).transpose())
         rec = self.learn.recorder
         preds, y_val = self.learn.get_preds(DatasetType.Valid)
-        y_pred = preds.numpy().flatten()
         self.learn.recorder = rec
-        score = _wrmsse(y_pred, self.val, self.trn)
+        score = _wrmsse(preds, self.val, self.trn)
         return {'last_metrics': last_metrics + [score]}
     
 class SingleBatchProgressTracker(LearnerCallback):
@@ -165,7 +168,7 @@ def model_as_tabular(df_sales_train_melt, lr_find=False):
     non_zero = df_sales_train_melt.query('sales_dollars > 0').reset_index(drop=True)
     valid_idx = np.flatnonzero(non_zero['day_id'] > trn_days)
 
-    # TODO: this in fact is rather fragile and won't work without reset index above, can I do this differently?
+    # TODO: this in fact is fragile and won't work without reset index above, can I do this differently?
     val_mask = non_zero.index.isin(valid_idx)
     val = non_zero[val_mask]
     trn = non_zero[~val_mask]
@@ -197,7 +200,7 @@ def model_as_tabular(df_sales_train_melt, lr_find=False):
         fig = learn.recorder.plot(return_fig=True)
         fig.savefig('lr_find.png')
         !open lr_find.png
-    learn.fit_one_cycle(5, 1e-1)
+    learn.fit_one_cycle(3, 1e-1)
     fig = learn.recorder.plot_losses(return_fig=True)
     fig.savefig('loss_log.png')
 
@@ -218,9 +221,66 @@ def model_as_tabular(df_sales_train_melt, lr_find=False):
     """
     return learn, trn, val
 
-sales_series = read_series_sample(n_sample_series)
+def extract_id_columns(t):
+    extracted = t['id'].str.extract('([A-Z]+)_(\\d)_(\\d{3})_([A-Z]{2})_(\d)')
+    t['cat_id'] = extracted[0]
+    t['dept_id'] = t['cat_id'] + '_' + extracted[1]
+    t['item_id'] = t['cat_id'] + '_' + extracted[2]
+    t['state_id'] = extracted[3]
+    t['store_id'] = t['state_id'] + '_' + extracted[4]
+    return t
+
+@memory.cache
+def get_submission_template_melt(df_sales_train_melt):
+    df_sample_submission = pd.read_csv('raw/sample_submission.csv')
+    df_sample_submission.head()
+
+    from datetime import timedelta
+    d_1_date = pd.to_datetime(df_sales_train_melt['day_date'].max())
+    # TODO: for evaluation rows these dates should be one month later
+    mapping = {f'F{day}':(d_1_date + timedelta(days=day)).date() for day in range(1,29)}
+    mapping['id'] = 'id'
+    df_sample_submission.columns = df_sample_submission.columns.map(mapping)
+    df_sample_submission_melt = df_sample_submission.melt(id_vars='id', var_name='day', value_name='sales')
+
+    last_prices = df_sales_train_melt[['id', 'sell_price']].groupby('id').tail(1)
+    last_prices.head(1)
+
+    df_sample_submission_melt = df_sample_submission_melt.merge(
+        last_prices, on='id', how='left', validate='many_to_one')
+
+    df_sample_submission_melt = extract_id_columns(df_sample_submission_melt)
+    return df_sample_submission_melt
+
+def to_submission(learn, df_sample_submission_melt):
+    from datetime import timedelta
+    submission = df_sample_submission_melt.pivot(index='id', columns='day', values='sales').reset_index()
+    
+    learn.data.add_test(TabularList.from_df(df=df_sample_submission_melt, 
+                                        cat_names=learn.data.cat_names, 
+                                        cont_names=learn.data.train_ds.x.cont_names,
+                                        processor = learn.data.train_ds.x.processor))
+    preds, _ = self.learn.get_preds(DatasetType.Valid)
+    _transform_target(preds, df=submission)
+
+    d_1_date = pd.to_datetime(submission.columns[1])
+    mapping = {(d_1_date + timedelta(days=day-1)).date():f'F{day}' for day in range(1,29)}
+    mapping['id'] = 'id'
+    
+    submission.columns = submission.columns.map(mapping)
+    
+    return submission
+
+# TODO: all of this preprocessing ought to happen once and than sampling can use that final dataframe
+sales_series = read_series_sample(n_total_series) # TODO: just testing out submissions: n_sample_series
 sales_series = melt_sales_series(sales_series)
 sales_series = extract_day_ids(sales_series)
 sales_series = join_w_calendar(sales_series)
 sales_series = join_w_prices(sales_series)
+submission_template = get_submission_template_melt(
+    sales_series[['id', 'sell_price', 'day_date']]
+)
 learn, trn, val = model_as_tabular(sales_series)
+submission = to_submission(learn, submission_template)
+submission.to_csv('tmp/0500-fastai-pipeline.csv', index=False)
+!open tmp
