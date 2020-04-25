@@ -3,20 +3,24 @@ from sklearn.pipeline import Pipeline
 import pandas as pd
 import numpy as np
 import matplotlib
+import os
 
-raw = 'raw'
+raw = os.environ.get('DATA_RAW_DIR', 'raw')
 processed = 'processed'
 submissions = 'submissions'
-tmp = 'tmp'
+tmp_dir = './tmp'
 
 n_days_total = 1913
-trn_days = 1900
 n_total_series = 30490
-n_sample_series = 50
+trn_days = int(os.environ.get('N_TRAIN_DAYS', '1900'))
+n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '5'))
 
 from joblib import Memory
-location = './tmp'
-memory = Memory(location, verbose=1)
+joblib_location  = os.environ.get('JOBLIB_CACHE_DIR', './tmp')
+joblib_verbosity = int(os.environ.get('JOBLIB_VERBOSITY', '1'))
+memory = Memory(joblib_location, verbose=joblib_verbosity)
+
+do_submit        = bool(os.environ.get('PREPARE_SUBMIT', '').lower() == 'true')
 
 @memory.cache
 def read_series_sample(n = 10):
@@ -182,7 +186,7 @@ def model_as_tabular(df_sales_train_melt, lr_find=False):
     cat_names = ['item_id', 'dept_id', 'cat_id', 'store_id', 'state_id', 'month_id', 'id']
     cols = cat_names + ['sell_price'] + [dep_var]
 
-    path ='./tmp'
+    path = tmp_dir
     data = TabularDataBunch.from_df(path, non_zero[cols], dep_var, valid_idx=valid_idx,
                                     bs=256,
                                     procs=procs, cat_names=cat_names)
@@ -199,7 +203,7 @@ def model_as_tabular(df_sales_train_melt, lr_find=False):
         learn.lr_find()
         fig = learn.recorder.plot(return_fig=True)
         fig.savefig('lr_find.png')
-        !open lr_find.png
+        # TODO: make this compatible with paperspace !open lr_find.png
     learn.fit_one_cycle(3, 1e-1)
     fig = learn.recorder.plot_losses(return_fig=True)
     fig.savefig('loss_log.png')
@@ -272,7 +276,7 @@ def to_submission(learn, df_sample_submission_melt):
     return submission
 
 # TODO: all of this preprocessing ought to happen once and than sampling can use that final dataframe
-sales_series = read_series_sample(n_total_series) # TODO: just testing out submissions: n_sample_series
+sales_series = read_series_sample(n_sample_series)
 sales_series = melt_sales_series(sales_series)
 sales_series = extract_day_ids(sales_series)
 sales_series = join_w_calendar(sales_series)
@@ -281,6 +285,6 @@ submission_template = get_submission_template_melt(
     sales_series[['id', 'sell_price', 'day_date']]
 )
 learn, trn, val = model_as_tabular(sales_series)
-submission = to_submission(learn, submission_template)
-submission.to_csv('tmp/0500-fastai-pipeline.csv', index=False)
-!open tmp
+if do_submit:
+    submission = to_submission(learn, submission_template)
+    submission.to_csv(f'{tmp_dir}/0500-fastai-pipeline.csv', index=False)

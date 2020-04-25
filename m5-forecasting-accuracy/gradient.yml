@@ -1,11 +1,13 @@
 apiKey: null
 artifactDirectory: null
 clusterId: null
-command: find /storage; pwd; find .
+command: "python -m ivanocode.pipeline.pipeline"
 container: janakiramm/python:3
 containerUser: null
 experimentEnv: null
-ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.zip,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*i,raw/*,ivanocode/tmp/*,*tmp*'
+#  JOBLIB_CACHE_DIR: '/storage/joblib'
+#  DATA_RAW_DIR: '/storage/raw'
+ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*'
 isPreemptible: true
 machineType: C3
 modelPath: null
