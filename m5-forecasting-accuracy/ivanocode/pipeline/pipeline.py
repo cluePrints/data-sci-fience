@@ -13,7 +13,7 @@ tmp_dir = './tmp'
 n_days_total = 1913
 n_total_series = 30490
 trn_days = int(os.environ.get('N_TRAIN_DAYS', '1900'))
-n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '5'))
+n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '150'))
 
 from joblib import Memory
 joblib_location  = os.environ.get('JOBLIB_CACHE_DIR', './tmp')
@@ -22,12 +22,34 @@ memory = Memory(joblib_location, verbose=joblib_verbosity)
 
 do_submit        = bool(os.environ.get('PREPARE_SUBMIT', '').lower() == 'true')
 
+dataloader_num_workers = None
+
+def reproducibility_mode():
+    global dataloader_num_workers
+    seed = 42
+
+    print(f"Reproducibility mode ON (seed: {seed})")
+    dataloader_num_workers = 0
+
+    # python RNG
+    import random
+    random.seed(seed)
+
+    # pytorch RNGs
+    import torch
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+
+    # numpy RNG
+    import numpy as np
+    np.random.seed(seed)
+
 @memory.cache
 def read_series_sample(n = 10):
-    sample_idx = set(np.random.choice(
-        range(1, n + 1),
-        n
-    ))
+    indexes = np.arange(1, n_total_series + 1)
+    np.random.shuffle(indexes)
+    sample_idx = set(indexes[:n])
 
     # header
     sample_idx.add(0)
@@ -189,6 +211,7 @@ def model_as_tabular(df_sales_train_melt, lr_find=False):
     path = tmp_dir
     data = TabularDataBunch.from_df(path, non_zero[cols], dep_var, valid_idx=valid_idx,
                                     bs=256,
+                                    num_workers=dataloader_num_workers,
                                     procs=procs, cat_names=cat_names)
 
     sales_range = df_sales_train_melt.agg({dep_var: ['min', 'max']})
@@ -276,6 +299,7 @@ def to_submission(learn, df_sample_submission_melt):
     return submission
 
 # TODO: all of this preprocessing ought to happen once and than sampling can use that final dataframe
+reproducibility_mode()
 sales_series = read_series_sample(n_sample_series)
 sales_series = melt_sales_series(sales_series)
 sales_series = extract_day_ids(sales_series)
