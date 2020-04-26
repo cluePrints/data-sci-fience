@@ -12,8 +12,11 @@ tmp_dir = './tmp'
 
 n_days_total = 1913
 n_total_series = 30490
-trn_days = int(os.environ.get('N_TRAIN_DAYS', '1900'))
-n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '150'))
+trn_days        = int(os.environ.get('N_TRAIN_DAYS',          '1900'))
+n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '1000'))
+n_train_epochs  = int(os.environ.get('N_TRAIN_EPOCHS',        '5'))
+batch_size      = int(os.environ.get('BATCH_SIZE',            '1024'))
+lr              = float(os.environ.get('LEARNING_RATE',       '1e-1'))
 
 from joblib import Memory
 joblib_location  = os.environ.get('JOBLIB_CACHE_DIR', './tmp')
@@ -21,8 +24,24 @@ joblib_verbosity = int(os.environ.get('JOBLIB_VERBOSITY', '1'))
 memory = Memory(joblib_location, verbose=joblib_verbosity)
 
 do_submit        = bool(os.environ.get('PREPARE_SUBMIT', '').lower() == 'true')
+lr_find          = bool(os.environ.get('LR_FIND', '').lower() != 'false')
 
 dataloader_num_workers = None
+
+import wandb
+from wandb.fastai import WandbCallback
+wandb.init(
+    project='kaggle-m5-accuracy',
+    reinit=True
+)
+wandb.config.update({
+    "epochs": n_train_epochs,
+    "batch_size": batch_size,
+    "n_trn_days": trn_days,
+    "n_trn_series": n_sample_series,
+    "lr": lr
+})
+wandb_callback = partial(WandbCallback)
 
 def reproducibility_mode():
     global dataloader_num_workers
@@ -190,7 +209,7 @@ class SingleBatchProgressTracker(LearnerCallback):
         score = self.metric(self.y_true, y_model)
         return {'last_metrics': last_metrics + [score]}
 
-def model_as_tabular(df_sales_train_melt, lr_find=False):
+def model_as_tabular(df_sales_train_melt):
     non_zero = df_sales_train_melt.query('sales_dollars > 0').reset_index(drop=True)
     valid_idx = np.flatnonzero(non_zero['day_id'] > trn_days)
 
@@ -210,15 +229,16 @@ def model_as_tabular(df_sales_train_melt, lr_find=False):
 
     path = tmp_dir
     data = TabularDataBunch.from_df(path, non_zero[cols], dep_var, valid_idx=valid_idx,
-                                    bs=256,
+                                    bs=batch_size,
                                     num_workers=dataloader_num_workers,
                                     procs=procs, cat_names=cat_names)
 
     sales_range = df_sales_train_melt.agg({dep_var: ['min', 'max']})
-    learn = tabular_learner(data, layers=[200,200,20,20], emb_szs=None, metrics=[rmse], 
+    learn = tabular_learner(data, layers=[200,200,20,20,1], emb_szs=None, metrics=[rmse], 
                         y_range=sales_range[dep_var].values, callback_fns=[
                             my_metrics_cb, 
-                            single_batch_metric],
+                            single_batch_metric,
+                            wandb_callback],
                         use_bn=True,
                         wd=0)
     # Note to self: default wd seem to big - results converged to basically nothing in the first ep
@@ -226,8 +246,8 @@ def model_as_tabular(df_sales_train_melt, lr_find=False):
         learn.lr_find()
         fig = learn.recorder.plot(return_fig=True)
         fig.savefig('lr_find.png')
-        # TODO: make this compatible with paperspace !open lr_find.png
-    learn.fit_one_cycle(3, 1e-1)
+        !open lr_find.png
+    learn.fit_one_cycle(n_train_epochs, lr)
     fig = learn.recorder.plot_losses(return_fig=True)
     fig.savefig('loss_log.png')
 
@@ -298,17 +318,20 @@ def to_submission(learn, df_sample_submission_melt):
     
     return submission
 
-# TODO: all of this preprocessing ought to happen once and than sampling can use that final dataframe
-reproducibility_mode()
-sales_series = read_series_sample(n_sample_series)
-sales_series = melt_sales_series(sales_series)
-sales_series = extract_day_ids(sales_series)
-sales_series = join_w_calendar(sales_series)
-sales_series = join_w_prices(sales_series)
-submission_template = get_submission_template_melt(
-    sales_series[['id', 'sell_price', 'day_date']]
-)
-learn, trn, val = model_as_tabular(sales_series)
-if do_submit:
-    submission = to_submission(learn, submission_template)
-    submission.to_csv(f'{tmp_dir}/0500-fastai-pipeline.csv', index=False)
+def run_pipeline():
+    # TODO: all of this preprocessing ought to happen once and than sampling can use that final dataframe
+    reproducibility_mode()
+    sales_series = read_series_sample(n_sample_series)
+    sales_series = melt_sales_series(sales_series)
+    sales_series = extract_day_ids(sales_series)
+    sales_series = join_w_calendar(sales_series)
+    sales_series = join_w_prices(sales_series)
+    submission_template = get_submission_template_melt(
+        sales_series[['id', 'sell_price', 'day_date']]
+    )
+    learn, trn, val = model_as_tabular(sales_series)
+    if do_submit:
+        submission = to_submission(learn, submission_template)
+        submission.to_csv(f'{tmp_dir}/0500-fastai-pipeline.csv', index=False)
+        
+    return learn, trn, val
