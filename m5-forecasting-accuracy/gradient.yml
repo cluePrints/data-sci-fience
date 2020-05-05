@@ -1,15 +1,15 @@
 apiKey: null
 artifactDirectory: null
 clusterId: null
-command: "python -m ivanocode.pipeline.pipeline"
+command: "pip install --cache-dir /storage/tmp/pip -r docker/requirements.txt && python -m ivanocode.pipeline.pipeline"
 container: janakiramm/python:3
 containerUser: null
-experimentEnv: null
-#  JOBLIB_CACHE_DIR: '/storage/joblib'
-#  DATA_RAW_DIR: '/storage/raw'
-ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*'
-isPreemptible: true
-machineType: C3
+experimentEnv:
+  JOBLIB_CACHE_DIR: '/storage/joblib'
+  DATA_RAW_DIR: '/storage/raw'
+ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*,wandb/*'
+isPreemptible: false
+machineType: P4000
 modelPath: null
 modelType: null
 name: null
