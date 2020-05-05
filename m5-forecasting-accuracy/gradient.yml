@@ -7,6 +7,7 @@ containerUser: null
 experimentEnv:
   JOBLIB_CACHE_DIR: '/storage/joblib'
   DATA_RAW_DIR: '/storage/raw'
+  FORCE_GPU_USE: 'true'
 ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*,wandb/*'
 isPreemptible: false
 machineType: P4000

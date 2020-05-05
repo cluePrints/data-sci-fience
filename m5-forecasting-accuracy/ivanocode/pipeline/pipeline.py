@@ -26,6 +26,7 @@ memory = Memory(joblib_location, verbose=joblib_verbosity)
 
 do_submit        = bool(os.environ.get('PREPARE_SUBMIT', '').lower() == 'true')
 lr_find          = bool(os.environ.get('LR_FIND', '').lower() != 'false')
+force_gpu_use    = bool(os.environ.get('FORCE_GPU_USE', '').lower() == 'true')
 
 dataloader_num_workers = None
 
@@ -277,6 +278,8 @@ def model_as_tabular(df_sales_train_melt):
                             wandb_callback],
                         use_bn=True,
                         wd=0)
+    if use_gpu:
+        learn.model.cuda()
     # Note to self: default wd seem to big - results converged to basically nothing in the first ep
     if lr_find:
         learn.lr_find()
