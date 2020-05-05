@@ -316,7 +316,7 @@ def extract_id_columns(t):
 @memory.cache
 @timeit(log_time = timings)
 def get_submission_template_melt(df_sales_train_melt):
-    df_sample_submission = pd.read_csv('raw/sample_submission.csv')
+    df_sample_submission = pd.read_csv(f'{raw}/sample_submission.csv')
     df_sample_submission.head()
 
     from datetime import timedelta
@@ -381,3 +381,5 @@ def run_pipeline():
     push_timings_to_wandb()
         
     return learn, trn, val
+
+run_pipeline()
