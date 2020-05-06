@@ -1,10 +1,11 @@
 apiKey: null
 artifactDirectory: null
 clusterId: null
-command: "apt-get install python3-tk && python -m ivanocode.pipeline.pipeline"
-container: soboleiv/docker-kaggle-deeplearning-all
+command: "python -m ivanocode.pipeline.pipeline"
+container: soboleiv/docker-kaggle-deeplearning-all:latest
 containerUser: null
 experimentEnv:
+  MPLBACKEND: 'agg'                                       # work around python3-tk missing in the image
   JOBLIB_CACHE_DIR: '/storage/joblib'
   DATA_RAW_DIR: '/storage/raw'
   FORCE_GPU_USE: 'true'
