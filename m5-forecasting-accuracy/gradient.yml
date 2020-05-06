@@ -1,8 +1,8 @@
 apiKey: null
 artifactDirectory: null
 clusterId: null
-command: "pip install --cache-dir /storage/tmp/pip -r docker/requirements.txt && python -m ivanocode.pipeline.pipeline"
-container: janakiramm/python:3
+command: "apt-get install python3-tk && python -m ivanocode.pipeline.pipeline"
+container: soboleiv/docker-kaggle-deeplearning-all
 containerUser: null
 experimentEnv:
   JOBLIB_CACHE_DIR: '/storage/joblib'
@@ -10,7 +10,7 @@ experimentEnv:
   FORCE_GPU_USE: 'true'
 ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*,wandb/*'
 isPreemptible: false
-machineType: P4000
+machineType: C3
 modelPath: null
 modelType: null
 name: null

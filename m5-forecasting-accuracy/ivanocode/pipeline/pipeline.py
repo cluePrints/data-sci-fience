@@ -30,6 +30,11 @@ force_gpu_use    = bool(os.environ.get('FORCE_GPU_USE', '').lower() == 'true')
 
 dataloader_num_workers = None
 
+if force_gpu_use:
+    import torch
+    if not torch.cuda.is_available():
+        raise ValueError("No CUDA seems to be available to the code (while requested)")
+
 def init_wandb():
     import wandb
     from wandb.fastai import WandbCallback
@@ -278,7 +283,7 @@ def model_as_tabular(df_sales_train_melt):
                             wandb_callback],
                         use_bn=True,
                         wd=0)
-    if use_gpu:
+    if force_gpu_use:
         learn.model.cuda()
     # Note to self: default wd seem to big - results converged to basically nothing in the first ep
     if lr_find:
