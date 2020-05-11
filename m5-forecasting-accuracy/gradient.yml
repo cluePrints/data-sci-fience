@@ -2,16 +2,16 @@ apiKey: null
 artifactDirectory: null
 clusterId: null
 command: "python -m ivanocode.pipeline.pipeline"
-container: soboleiv/docker-kaggle-deeplearning-all:latest
+container: soboleiv/docker-kaggle-deeplearning-all:0.0.2
 containerUser: null
 experimentEnv:
   MPLBACKEND: 'agg'                                       # work around python3-tk missing in the image
   JOBLIB_CACHE_DIR: '/storage/joblib'
   DATA_RAW_DIR: '/storage/raw'
   FORCE_GPU_USE: 'true'
-ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*,wandb/*'
+ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*,wandb/*,venv/*'
 isPreemptible: false
-machineType: C3
+machineType: P4000
 modelPath: null
 modelType: null
 name: null
