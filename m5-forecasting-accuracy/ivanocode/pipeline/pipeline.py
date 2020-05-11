@@ -32,6 +32,7 @@ use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB', '').lower() == 'tru
 do_run_pipeline  = bool(os.environ.get('RUN_PIPLELINE', '').lower() == 'true')
 
 dataloader_num_workers = None
+callback_fns = []
 
 if force_gpu_use:
     import torch
@@ -57,7 +58,15 @@ def init_wandb():
     })
     return partial(WandbCallback)
 
+def _report_metrics(d):
+    if not use_wandb:
+        return
+
+    wandb.log(d)
+
 wandb_callback = init_wandb()
+if wandb_callback:
+    callback_fns.append(wandb_callback)
 
 def reproducibility_mode():
     global dataloader_num_workers
@@ -260,8 +269,7 @@ def model_as_tabular(df_sales_train_melt):
     trn = prefiltered[~val_mask]
     print(f"sample: {len(df_sales_train_melt)} prefiltered: {len(prefiltered)} trn: {len(trn)} val: {len(val)}")
 
-    import wandb
-    wandb.log({
+    _report_metrics({
         "trn_examples": len(df_sales_train_melt),
         "trn_examples_filtered": len(prefiltered),
         "val_examples": len(val)
@@ -285,8 +293,7 @@ def model_as_tabular(df_sales_train_melt):
     learn = tabular_learner(data, layers=[200,200,20,20,1], emb_szs=None, metrics=[rmse], 
                         y_range=sales_range[dep_var].values, callback_fns=[
                             my_metrics_cb, 
-                            single_batch_metric,
-                            wandb_callback],
+                            single_batch_metric] + callback_fns,
                         use_bn=True,
                         wd=0)
 
