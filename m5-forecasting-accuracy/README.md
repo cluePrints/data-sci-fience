@@ -7,3 +7,7 @@
 
 3. Start an experiment
     gradient experiments run singlenode --optionsFile gradient.yml 
+
+## Unsorted
+
+   pip3 install matplotlib fastai sklearn numpy pandas ipython wandb

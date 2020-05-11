@@ -6,6 +6,7 @@ import matplotlib
 import os
 from functools import partial
 
+print("Parsing args")
 raw = os.environ.get('DATA_RAW_DIR', 'raw')
 processed = 'processed'
 submissions = 'submissions'
@@ -14,7 +15,7 @@ tmp_dir = './tmp'
 n_days_total = 1913
 n_total_series = 30490
 trn_days        = int(os.environ.get('N_TRAIN_DAYS',          '1900'))
-n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '1000'))
+n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '10'))
 n_train_epochs  = int(os.environ.get('N_TRAIN_EPOCHS',        '5'))
 batch_size      = int(os.environ.get('BATCH_SIZE',            '1024'))
 lr              = float(os.environ.get('LEARNING_RATE',       '1e-1'))
@@ -27,6 +28,8 @@ memory = Memory(joblib_location, verbose=joblib_verbosity)
 do_submit        = bool(os.environ.get('PREPARE_SUBMIT', '').lower() == 'true')
 lr_find          = bool(os.environ.get('LR_FIND', '').lower() != 'false')
 force_gpu_use    = bool(os.environ.get('FORCE_GPU_USE', '').lower() == 'true')
+use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB', '').lower() == 'true')
+do_run_pipeline  = bool(os.environ.get('RUN_PIPLELINE', '').lower() == 'true')
 
 dataloader_num_workers = None
 
@@ -36,6 +39,9 @@ if force_gpu_use:
         raise ValueError("No CUDA seems to be available to the code (while requested)")
 
 def init_wandb():
+    if not use_wandb:
+        return
+
     import wandb
     from wandb.fastai import WandbCallback
     wandb.init(
@@ -283,8 +289,7 @@ def model_as_tabular(df_sales_train_melt):
                             wandb_callback],
                         use_bn=True,
                         wd=0)
-    if force_gpu_use:
-        learn.model.cuda()
+
     # Note to self: default wd seem to big - results converged to basically nothing in the first ep
     if lr_find:
         learn.lr_find()
@@ -365,6 +370,9 @@ def to_submission(learn, df_sample_submission_melt):
     return submission
 
 def push_timings_to_wandb():
+    if not use_wandb:
+        return;
+
     import wandb
     wandb.log({
         f'time_{k}': v for (k,v) in timings.items()
@@ -390,4 +398,5 @@ def run_pipeline():
         
     return learn, trn, val
 
-run_pipeline()
+if do_run_pipeline:
+    run_pipeline()

@@ -9,6 +9,9 @@ experimentEnv:
   JOBLIB_CACHE_DIR: '/storage/joblib'
   DATA_RAW_DIR: '/storage/raw'
   FORCE_GPU_USE: 'true'
+  LR_FIND: 'false'
+  RUN_PIPELINE: 'true'
+  N_TRAIN_SAMPLE_SERIES: 10
 ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*,wandb/*,venv/*'
 isPreemptible: false
 machineType: P4000
