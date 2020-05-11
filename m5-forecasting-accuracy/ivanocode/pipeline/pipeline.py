@@ -167,9 +167,19 @@ def extract_day_ids(df_sales_train_melt):
 @timeit(log_time = timings)
 def join_w_calendar(df_sales_train_melt):
     df_calendar = pd.read_csv(f'{raw}/calendar.csv')
+
+    df_calendar_melt = df_calendar.melt(
+        id_vars=['date', 'wm_yr_wk', 'weekday', 'wday', 'year', 'd',
+                 'event_name_1', 'event_name_2', 'event_type_1', 'event_type_2'],
+        value_name='snap_flag',
+        var_name='state_id',
+        value_vars=['snap_CA', 'snap_TX', 'snap_WI']
+    )
+    df_calendar_melt['state_id'] = df_calendar_melt['state_id'].str.split('_').str[1]
+
     df_sales_train_melt =  df_sales_train_melt.merge(
-        df_calendar[['date', 'wm_yr_wk']],
-        left_on='day_date_str', right_on='date',
+        df_calendar_melt[['date', 'state_id', 'wm_yr_wk', 'snap_flag']],
+        left_on=['day_date_str', 'state_id'], right_on=['date', 'state_id'],
         validate='many_to_one')
 
     df_sales_train_melt['wm_yr_wk'] = df_sales_train_melt['wm_yr_wk'].astype('int16')
@@ -280,7 +290,7 @@ def model_as_tabular(df_sales_train_melt):
 
     procs = [FillMissing, Categorify, Normalize]
     dep_var = 'sales_dollars'
-    cat_names = ['item_id', 'dept_id', 'cat_id', 'store_id', 'state_id', 'month_id', 'id']
+    cat_names = ['item_id', 'dept_id', 'cat_id', 'store_id', 'state_id', 'month_id', 'id', 'snap_flag']
     cols = cat_names + ['sell_price'] + [dep_var]
 
     path = tmp_dir
