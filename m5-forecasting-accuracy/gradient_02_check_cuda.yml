@@ -1,7 +1,7 @@
 apiKey: null
 artifactDirectory: null
 clusterId: null
-command: 'nvcc --version; nvidia-smi; python3 -c "import torch; print(f\"CUDA available: {torch.cuda.is_available()}\"); print(f\"Device count: {torch.cuda.device_count()})\")"'
+command: 'nvcc --version; nvidia-smi; python3 -c "import torch; print(f\"CUDA available: {torch.cuda.is_available()}\"); torch.cuda.init(); print(f\"Device count: {torch.cuda.device_count()}\")"'
 container: soboleiv/kaggle-deeplearning-all:0.0.4
 containerUser: null
 experimentEnv:
