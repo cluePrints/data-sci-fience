@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib
 import os
 from functools import partial
+import torch
 
 print("Parsing args")
 raw = os.environ.get('DATA_RAW_DIR', 'raw')
@@ -29,15 +30,16 @@ do_submit        = bool(os.environ.get('PREPARE_SUBMIT', '').lower() == 'true')
 lr_find          = bool(os.environ.get('LR_FIND', '').lower() != 'false')
 force_gpu_use    = bool(os.environ.get('FORCE_GPU_USE', '').lower() == 'true')
 use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB', '').lower() == 'true')
-do_run_pipeline  = bool(os.environ.get('RUN_PIPLELINE', '').lower() == 'true')
+do_run_pipeline  = bool(os.environ.get('RUN_PIPELINE', '').lower() == 'true')
 
 dataloader_num_workers = None
 callback_fns = []
+device = torch.device('cuda')
 
 if force_gpu_use:
-    import torch
     if not torch.cuda.is_available():
         raise ValueError("No CUDA seems to be available to the code (while requested)")
+    device = torch.device('cuda')
 
 def init_wandb():
     if not use_wandb:
@@ -255,8 +257,9 @@ class SingleBatchProgressTracker(LearnerCallback):
     def __init__(self, learn, metric, metric_name):
         self.learn = learn
         self.batch = learn.data.one_batch(DatasetType.Train)
-        self.x = self.batch[0]
-        self.y_true = self.batch[1]
+        x_cat, x_cont = self.batch[0]
+        self.x = [x_cat.to(device), x_cont.to(device)]
+        self.y_true = self.batch[1].to(device)
         self.metric = metric
         self.metric_name = metric_name
         
@@ -297,7 +300,8 @@ def model_as_tabular(df_sales_train_melt):
     data = TabularDataBunch.from_df(path, prefiltered[cols], dep_var, valid_idx=valid_idx,
                                     bs=batch_size,
                                     num_workers=dataloader_num_workers,
-                                    procs=procs, cat_names=cat_names)
+                                    procs=procs, cat_names=cat_names,
+                                    device=device)
 
     sales_range = df_sales_train_melt.agg({dep_var: ['min', 'max']})
     learn = tabular_learner(data, layers=[200,200,20,20,1], emb_szs=None, metrics=[rmse], 
@@ -306,6 +310,7 @@ def model_as_tabular(df_sales_train_melt):
                             single_batch_metric] + callback_fns,
                         use_bn=True,
                         wd=0)
+    learn.model = learn.model.to(device)
 
     # Note to self: default wd seem to big - results converged to basically nothing in the first ep
     if lr_find:
