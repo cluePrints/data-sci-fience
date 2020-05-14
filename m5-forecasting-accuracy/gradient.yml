@@ -6,13 +6,19 @@ container: soboleiv/kaggle-deeplearning-all:0.0.5
 containerUser: null
 experimentEnv:
   MPLBACKEND: 'agg'                                       # work around python3-tk missing in the image
-  JOBLIB_CACHE_DIR: '/storage/joblib'
-  DATA_RAW_DIR: '/storage/raw'
-  FORCE_GPU_USE: 'true'
-  LR_FIND: 'false'
-  RUN_PIPELINE: 'true'
+  JOBLIB_CACHE_DIR:      '/storage/joblib'
+  DATA_RAW_DIR:          '/storage/raw'
+  OUT_DIR:               '/artifacts'
+  FORCE_GPU_USE:         true
+  LR_FIND:               false
+  RUN_PIPELINE:          true
   N_TRAIN_SAMPLE_SERIES: 1000
-  PUSH_METRICS_WANDB: 'true'
+  BATCH_SIZE:            '1000'
+  LEARNING_RATE:         1
+  N_TRAIN_EPOCHS:        3
+  PUSH_METRICS_WANDB:    true
+  REPRODUCIBILITY_MODE:  false
+
 ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*,wandb/*,venv/*'
 isPreemptible: false
 machineType: P4000

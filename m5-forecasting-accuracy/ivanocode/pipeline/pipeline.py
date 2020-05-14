@@ -12,34 +12,39 @@ raw = os.environ.get('DATA_RAW_DIR', 'raw')
 processed = 'processed'
 submissions = 'submissions'
 tmp_dir = './tmp'
+out_dir = os.environ.get('OUT_DIR', '.')
 
 n_days_total = 1913
 n_total_series = 30490
 trn_days        = int(os.environ.get('N_TRAIN_DAYS',          '1900'))
-n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '10'))
+n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '1000'))
 n_train_epochs  = int(os.environ.get('N_TRAIN_EPOCHS',        '5'))
-batch_size      = int(os.environ.get('BATCH_SIZE',            '1024'))
+batch_size      = int(float(os.environ.get('BATCH_SIZE',            '1024')))
 lr              = float(os.environ.get('LEARNING_RATE',       '1e-1'))
 
 from joblib import Memory
 joblib_location  = os.environ.get('JOBLIB_CACHE_DIR', './tmp')
 joblib_verbosity = int(os.environ.get('JOBLIB_VERBOSITY', '1'))
-memory = Memory(joblib_location, verbose=joblib_verbosity)
+memory = Memory(location=None, verbose=joblib_verbosity)
 
-do_submit        = bool(os.environ.get('PREPARE_SUBMIT', '').lower() == 'true')
-lr_find          = bool(os.environ.get('LR_FIND', '').lower() != 'false')
-force_gpu_use    = bool(os.environ.get('FORCE_GPU_USE', '').lower() == 'true')
-use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB', '').lower() == 'true')
-do_run_pipeline  = bool(os.environ.get('RUN_PIPELINE', '').lower() == 'true')
+do_submit        = bool(os.environ.get('PREPARE_SUBMIT',       'false').lower() == 'true')
+lr_find          = bool(os.environ.get('LR_FIND',              'false').lower() == 'true')
+force_gpu_use    = bool(os.environ.get('FORCE_GPU_USE',        'false').lower() == 'true')
+use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB',   'false').lower() == 'true')
+do_run_pipeline  = bool(os.environ.get('RUN_PIPELINE',         'false').lower() == 'true')
+reproducibility  = bool(os.environ.get('REPRODUCIBILITY_MODE', 'false').lower() == 'true')
 
-dataloader_num_workers = None
+
+dataloader_num_workers = 8
 callback_fns = []
-device = torch.device('cuda')
+device = torch.device('cpu')
 
 if force_gpu_use:
     if not torch.cuda.is_available():
         raise ValueError("No CUDA seems to be available to the code (while requested)")
     device = torch.device('cuda')
+
+print(f"Device: {device}")
 
 def init_wandb():
     if not use_wandb:
@@ -47,10 +52,12 @@ def init_wandb():
 
     import wandb
     from wandb.fastai import WandbCallback
+    print("Initializing wandb")
     wandb.init(
         project='kaggle-m5-accuracy',
         reinit=True
     )
+    print(" saving config")
     wandb.config.update({
         "epochs": n_train_epochs,
         "batch_size": batch_size,
@@ -58,12 +65,14 @@ def init_wandb():
         "n_trn_series": n_sample_series,
         "lr": lr
     })
+    print(" wandb init done")
     return partial(WandbCallback)
 
 def _report_metrics(d):
     if not use_wandb:
         return
 
+    import wandb
     wandb.log(d)
 
 wandb_callback = init_wandb()
@@ -71,6 +80,10 @@ if wandb_callback:
     callback_fns.append(wandb_callback)
 
 def reproducibility_mode():
+    if not reproducibility:
+        print(f"Reproducibility mode OFF")
+        return
+
     global dataloader_num_workers
     seed = 42
 
@@ -316,7 +329,7 @@ def model_as_tabular(df_sales_train_melt):
     if lr_find:
         learn.lr_find()
         fig = learn.recorder.plot(return_fig=True)
-        fig.savefig('lr_find.png')
+        fig.savefig(f'{out_dir}/lr_find.png')
         # TODO: !open lr_find.png
     learn.fit_one_cycle(n_train_epochs, lr)
     fig = learn.recorder.plot_losses(return_fig=True)
@@ -414,11 +427,19 @@ def run_pipeline():
     learn, trn, val = model_as_tabular(sales_series)
     if do_submit:
         submission = to_submission(learn, submission_template)
-        submission.to_csv(f'{tmp_dir}/0500-fastai-pipeline.csv', index=False)
+        submission.to_csv(f'{out_dir}/submissions/0500-fastai-pipeline.csv', index=False)
         
     push_timings_to_wandb()
         
     return learn, trn, val
 
 if do_run_pipeline:
-    run_pipeline()
+    print("Running pipeline")
+    try:
+        run_pipeline()
+    except Error as err:
+        import traceback
+        print(f"Caught exception: {err}")
+        print(traceback.format_exc())
+else:
+    print("Not running pipeline")
