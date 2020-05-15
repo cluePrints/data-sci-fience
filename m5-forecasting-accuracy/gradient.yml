@@ -9,10 +9,12 @@ experimentEnv:
   JOBLIB_CACHE_DIR:      '/storage/joblib'
   DATA_RAW_DIR:          '/storage/raw'
   OUT_DIR:               '/artifacts'
+  LOG_DIR:               '/artifacts'
+  LOG_LEVEL:             'DEBUG'
   FORCE_GPU_USE:         true
   LR_FIND:               false
   RUN_PIPELINE:          true
-  N_TRAIN_SAMPLE_SERIES: 1000
+  N_TRAIN_SAMPLE_SERIES: 9000
   BATCH_SIZE:            '1000'
   LEARNING_RATE:         1
   N_TRAIN_EPOCHS:        3

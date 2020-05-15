@@ -6,20 +6,23 @@ import matplotlib
 import os
 from functools import partial
 import torch
+import logging
 
-print("Parsing args")
+LOG.debug("Parsing args")
 raw = os.environ.get('DATA_RAW_DIR', 'raw')
 processed = 'processed'
 submissions = 'submissions'
 tmp_dir = './tmp'
 out_dir = os.environ.get('OUT_DIR', '.')
+log_dir = os.environ.get('LOG_DIR', '.')
+log_lvl = os.environ.get('LOG_LEVEL', 'DEBUG')
 
 n_days_total = 1913
 n_total_series = 30490
 trn_days        = int(os.environ.get('N_TRAIN_DAYS',          '1900'))
-n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '1000'))
+n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '10000'))
 n_train_epochs  = int(os.environ.get('N_TRAIN_EPOCHS',        '5'))
-batch_size      = int(float(os.environ.get('BATCH_SIZE',            '1024')))
+batch_size      = int(os.environ.get('BATCH_SIZE',            '1024'))
 lr              = float(os.environ.get('LEARNING_RATE',       '1e-1'))
 
 from joblib import Memory
@@ -34,6 +37,24 @@ use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB',   'false').lower() 
 do_run_pipeline  = bool(os.environ.get('RUN_PIPELINE',         'false').lower() == 'true')
 reproducibility  = bool(os.environ.get('REPRODUCIBILITY_MODE', 'false').lower() == 'true')
 
+def configure_logging()
+    numeric_level = getattr(logging, log_lvl, None)
+    log_format = '%(asctime)s %(levelname)s %(name)s %(message)s'
+    date_format = '%Y-%m-%d %H:%M:%S'
+    logging.basicConfig(
+        filename=f'{log_dir}/log.txt',
+        level=numeric_level,
+        format=log_format,
+        datefmt=date_format)
+    log = logging.getLogger('root')
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter(log_format, date_format))
+    log.addHandler(ch)
+
+    return log
+
+LOG = configure_logging()
 
 dataloader_num_workers = 8
 callback_fns = []
@@ -44,7 +65,7 @@ if force_gpu_use:
         raise ValueError("No CUDA seems to be available to the code (while requested)")
     device = torch.device('cuda')
 
-print(f"Device: {device}")
+LOG.debug(f"Device: {device}")
 
 def init_wandb():
     if not use_wandb:
@@ -52,20 +73,21 @@ def init_wandb():
 
     import wandb
     from wandb.fastai import WandbCallback
-    print("Initializing wandb")
+    LOG.debug("Initializing wandb")
     wandb.init(
         project='kaggle-m5-accuracy',
         reinit=True
     )
-    print(" saving config")
+    LOG.debug("Saving wandb config")
     wandb.config.update({
         "epochs": n_train_epochs,
         "batch_size": batch_size,
         "n_trn_days": trn_days,
         "n_trn_series": n_sample_series,
-        "lr": lr
+        "lr": lr,
+        "device": str(device)
     })
-    print(" wandb init done")
+    LOG.debug("Saving wandb config - done")
     return partial(WandbCallback)
 
 def _report_metrics(d):
@@ -73,6 +95,7 @@ def _report_metrics(d):
         return
 
     import wandb
+    LOG.debug("Reporting wandb metrics")
     wandb.log(d)
 
 wandb_callback = init_wandb()
@@ -81,13 +104,13 @@ if wandb_callback:
 
 def reproducibility_mode():
     if not reproducibility:
-        print(f"Reproducibility mode OFF")
+        LOG.info(f"Reproducibility mode OFF")
         return
 
     global dataloader_num_workers
     seed = 42
 
-    print(f"Reproducibility mode ON (seed: {seed})")
+    LOG.info(f"Reproducibility mode ON (seed: {seed})")
     dataloader_num_workers = 0
 
     # python RNG
@@ -109,15 +132,15 @@ import time
 def timeit(log_time = None):
     def decorator(method):
         def wrapper(*args, **kw):
+            name = kw.get('log_name', method.__name__.upper())
+            LOG.debug(f"{method.__name__}: starting")
             ts = time.time()
             result = method(*args, **kw)
             te = time.time()
             time_spent = int((te - ts) * 1000)
             if log_time is not None:
-                name = kw.get('log_name', method.__name__.upper())
                 log_time[name] = time_spent
-            else:
-                print(f'{method.__name__}  {time_spent:.2f} ms')
+            LOG.debug(f'{method.__name__}: done, {time_spent:.2f} ms')
             return result
         return wrapper
     return decorator
@@ -185,7 +208,7 @@ def join_w_calendar(df_sales_train_melt):
 
     df_calendar_melt = df_calendar.melt(
         id_vars=['date', 'wm_yr_wk', 'weekday', 'wday', 'year', 'd',
-                 'event_name_1', 'event_name_2', 'event_type_1', 'event_type_2'],
+                'event_name_1', 'event_name_2', 'event_type_1', 'event_type_2'],
         value_name='snap_flag',
         var_name='state_id',
         value_vars=['snap_CA', 'snap_TX', 'snap_WI']
@@ -225,13 +248,18 @@ def _transform_target(preds, df):
     df['sales'].fillna(0, inplace=True)
     df['sales'] = df['sales'].astype('int')
 
+@timeit(log_time = timings)
 def _wrmsse(preds, val, trn):
     pred = val.copy()
     _transform_target(preds, df=pred)
 
+    LOG.debug(" val aggs")
     val_w_aggs = with_aggregate_series(val.copy())
+    LOG.debug(" trn aggs")
     trn_w_aggs = with_aggregate_series(trn.copy())
+    LOG.debug(" pred aggs")
     pred_w_aggs = with_aggregate_series(pred.copy())
+    LOG.debug(" score")
     score = wrmsse_total(
         trn_w_aggs,
         val_w_aggs,
@@ -256,10 +284,12 @@ class MyMetrics(LearnerCallback):
         pass
     
     def on_epoch_end(self, last_metrics, **kwargs):
+        LOG.debug("Epoch done, about to score wrmsse")
         # TODO: collect progress for a single val batch and make it available for display
         # display(pd.DataFrame({'y_pred': y, 'y_val': val['sales_dollars']}).transpose())
         rec = self.learn.recorder
         preds, y_val = self.learn.get_preds(DatasetType.Valid)
+        LOG.debug(f"Preds: {len(preds)}, {preds.element_size()*preds.nelement()} bytes, y_val: {y_val.element_size()*y_val.nelement()}")
         self.learn.recorder = rec
         score = _wrmsse(preds, self.val, self.trn)
         return {'last_metrics': last_metrics + [score]}
@@ -285,6 +315,7 @@ class SingleBatchProgressTracker(LearnerCallback):
         score = self.metric(self.y_true, y_model)
         return {'last_metrics': last_metrics + [score]}
 
+@timeit(log_time = timings)
 def model_as_tabular(df_sales_train_melt):
     prefiltered = df_sales_train_melt.reset_index(drop=True)
     valid_idx = np.flatnonzero(prefiltered['day_id'] > trn_days)
@@ -293,7 +324,7 @@ def model_as_tabular(df_sales_train_melt):
     val_mask = prefiltered.index.isin(valid_idx)
     val = prefiltered[val_mask]
     trn = prefiltered[~val_mask]
-    print(f"sample: {len(df_sales_train_melt)} prefiltered: {len(prefiltered)} trn: {len(trn)} val: {len(val)}")
+    LOG.debug(f"sample: {len(df_sales_train_melt)} prefiltered: {len(prefiltered)} trn: {len(trn)} val: {len(val)}")
 
     _report_metrics({
         "trn_examples": len(df_sales_train_melt),
@@ -327,9 +358,10 @@ def model_as_tabular(df_sales_train_melt):
 
     # Note to self: default wd seem to big - results converged to basically nothing in the first ep
     if lr_find:
+        LOG.debug(f"starting LR finder")
         learn.lr_find()
         fig = learn.recorder.plot(return_fig=True)
-        fig.savefig(f'{out_dir}/lr_find.png')
+        LOG.debug(f" LR finder - done")
         # TODO: !open lr_find.png
     learn.fit_one_cycle(n_train_epochs, lr)
     fig = learn.recorder.plot_losses(return_fig=True)
@@ -434,12 +466,13 @@ def run_pipeline():
     return learn, trn, val
 
 if do_run_pipeline:
-    print("Running pipeline")
+    LOG.info("Running pipeline")
     try:
         run_pipeline()
     except Error as err:
         import traceback
-        print(f"Caught exception: {err}")
-        print(traceback.format_exc())
+        LOG.error(f"Caught exception: {err}")
+        LOG.error(traceback.format_exc())
+        raise
 else:
-    print("Not running pipeline")
+    LOG.info("Not running pipeline")
