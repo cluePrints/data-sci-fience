@@ -37,7 +37,7 @@ use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB',   'false').lower() 
 do_run_pipeline  = bool(os.environ.get('RUN_PIPELINE',         'false').lower() == 'true')
 reproducibility  = bool(os.environ.get('REPRODUCIBILITY_MODE', 'false').lower() == 'true')
 
-def configure_logging()
+def configure_logging():
     numeric_level = getattr(logging, log_lvl, None)
     log_format = '%(asctime)s %(levelname)s %(name)s %(message)s'
     date_format = '%Y-%m-%d %H:%M:%S'
