@@ -7,8 +7,10 @@ import os
 from functools import partial
 import torch
 import logging
+from datetime import date
+import io
 
-LOG.debug("Parsing args")
+print("Parsing args")
 raw = os.environ.get('DATA_RAW_DIR', 'raw')
 processed = 'processed'
 submissions = 'submissions'
@@ -16,12 +18,13 @@ tmp_dir = './tmp'
 out_dir = os.environ.get('OUT_DIR', '.')
 log_dir = os.environ.get('LOG_DIR', '.')
 log_lvl = os.environ.get('LOG_LEVEL', 'DEBUG')
+con_log_lvl = os.environ.get('CONSOLE_LOG_LEVEL', 'DEBUG')
 
 n_days_total = 1913
 n_total_series = 30490
 trn_days        = int(os.environ.get('N_TRAIN_DAYS',          '1900'))
-n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '10000'))
-n_train_epochs  = int(os.environ.get('N_TRAIN_EPOCHS',        '5'))
+n_sample_series = int(os.environ.get('N_TRAIN_SAMPLE_SERIES', '10'))
+n_train_epochs  = int(os.environ.get('N_TRAIN_EPOCHS',        '3'))
 batch_size      = int(os.environ.get('BATCH_SIZE',            '1024'))
 lr              = float(os.environ.get('LEARNING_RATE',       '1e-1'))
 
@@ -35,20 +38,26 @@ lr_find          = bool(os.environ.get('LR_FIND',              'false').lower() 
 force_gpu_use    = bool(os.environ.get('FORCE_GPU_USE',        'false').lower() == 'true')
 use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB',   'false').lower() == 'true')
 do_run_pipeline  = bool(os.environ.get('RUN_PIPELINE',         'false').lower() == 'true')
-reproducibility  = bool(os.environ.get('REPRODUCIBILITY_MODE', 'false').lower() == 'true')
+reproducibility  = bool(os.environ.get('REPRODUCIBILITY_MODE', 'true' ).lower() == 'true')
 
 def configure_logging():
+    log = logging.getLogger('root')
+    already_initialized = any(filter(lambda h: isinstance(h, logging.StreamHandler), log.handlers))
+    if already_initialized:
+        print("Logging already initialized - skipping.")
+        return logging.getLogger('root')
+
     numeric_level = getattr(logging, log_lvl, None)
-    log_format = '%(asctime)s %(levelname)s %(name)s %(message)s'
+    log_format = '%(levelname)5s [%(asctime)s] %(name)s: %(message)s'
     date_format = '%Y-%m-%d %H:%M:%S'
     logging.basicConfig(
-        filename=f'{log_dir}/log.txt',
+        filename=f'{log_dir}/m5_pipeline_{date.today().isoformat()}.txt',
         level=numeric_level,
         format=log_format,
         datefmt=date_format)
     log = logging.getLogger('root')
     ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
+    ch.setLevel(getattr(logging, con_log_lvl, None))
     ch.setFormatter(logging.Formatter(log_format, date_format))
     log.addHandler(ch)
 
@@ -66,6 +75,11 @@ if force_gpu_use:
     device = torch.device('cuda')
 
 LOG.debug(f"Device: {device}")
+
+def df_info(df):
+    buf = io.StringIO()
+    df.info(buf=buf)
+    return buf.getvalue()
 
 def init_wandb():
     if not use_wandb:
@@ -213,6 +227,7 @@ def join_w_calendar(df_sales_train_melt):
         var_name='state_id',
         value_vars=['snap_CA', 'snap_TX', 'snap_WI']
     )
+    df_calendar_melt['snap_flag'] = df_calendar_melt['snap_flag'].astype('uint8')
     df_calendar_melt['state_id'] = df_calendar_melt['state_id'].str.split('_').str[1]
 
     df_sales_train_melt =  df_sales_train_melt.merge(
@@ -246,19 +261,19 @@ def _transform_target(preds, df):
     df['sales'] = df['sales_dollars'] / df['sell_price']
     # TODO: rounding differently might be important for sporadic sales on lower-volume items
     df['sales'].fillna(0, inplace=True)
-    df['sales'] = df['sales'].astype('int')
+    df['sales'] = df['sales'].astype('int8')
 
 @timeit(log_time = timings)
 def _wrmsse(preds, val, trn):
     pred = val.copy()
     _transform_target(preds, df=pred)
 
-    LOG.debug(" val aggs")
+    LOG.debug(f" val aggs: {df_info(val)}")
     val_w_aggs = with_aggregate_series(val.copy())
-    LOG.debug(" trn aggs")
+    LOG.debug(f" trn aggs: {df_info(trn)}")
     trn_w_aggs = with_aggregate_series(trn.copy())
-    LOG.debug(" pred aggs")
-    pred_w_aggs = with_aggregate_series(pred.copy())
+    LOG.debug(f" pred aggs: {df_info(pred)}")
+    pred_w_aggs = with_aggregate_series(pred)
     LOG.debug(" score")
     score = wrmsse_total(
         trn_w_aggs,

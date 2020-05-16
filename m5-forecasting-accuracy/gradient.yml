@@ -11,6 +11,7 @@ experimentEnv:
   OUT_DIR:               '/artifacts'
   LOG_DIR:               '/artifacts'
   LOG_LEVEL:             'DEBUG'
+  CONSOLE_LOG_LEVEL:     'INFO'
   FORCE_GPU_USE:         true
   LR_FIND:               false
   RUN_PIPELINE:          true
