@@ -1,14 +1,19 @@
 from ivanocode.pipeline.wrmsse import wrmsse_total, with_aggregate_series
+from ivanocode.ivanocommon import jupyter_memory_report
 from sklearn.pipeline import Pipeline
 import pandas as pd
 import numpy as np
 import matplotlib
 import os
+import sys
 from functools import partial
 import torch
 import logging
-from datetime import date
+import datetime
 import io
+import tracemalloc
+
+tracemalloc.start()
 
 print("Parsing args")
 raw = os.environ.get('DATA_RAW_DIR', 'raw')
@@ -39,19 +44,20 @@ force_gpu_use    = bool(os.environ.get('FORCE_GPU_USE',        'false').lower() 
 use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB',   'false').lower() == 'true')
 do_run_pipeline  = bool(os.environ.get('RUN_PIPELINE',         'false').lower() == 'true')
 reproducibility  = bool(os.environ.get('REPRODUCIBILITY_MODE', 'true' ).lower() == 'true')
+per_epoch_wrmsse = bool(os.environ.get('PER_EPOCH_WRMSSE',     'false').lower() == 'true')
 
 def configure_logging():
     log = logging.getLogger('root')
     already_initialized = any(filter(lambda h: isinstance(h, logging.StreamHandler), log.handlers))
     if already_initialized:
-        print("Logging already initialized - skipping.")
+        print("Logging already initialized")
         return logging.getLogger('root')
 
     numeric_level = getattr(logging, log_lvl, None)
     log_format = '%(levelname)5s [%(asctime)s] %(name)s: %(message)s'
     date_format = '%Y-%m-%d %H:%M:%S'
     logging.basicConfig(
-        filename=f'{log_dir}/m5_pipeline_{date.today().isoformat()}.txt',
+        filename=f'{log_dir}/m5_pipeline_{datetime.datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}.txt',
         level=numeric_level,
         format=log_format,
         datefmt=date_format)
@@ -261,26 +267,51 @@ def _transform_target(preds, df):
     df['sales'] = df['sales_dollars'] / df['sell_price']
     # TODO: rounding differently might be important for sporadic sales on lower-volume items
     df['sales'].fillna(0, inplace=True)
-    df['sales'] = df['sales'].astype('int8')
+    df['sales'] = df['sales'].astype('int')
 
-@timeit(log_time = timings)
-def _wrmsse(preds, val, trn):
-    pred = val.copy()
-    _transform_target(preds, df=pred)
+class WrmsseContext():
+    def __init__(self, all_data, val_mask):
+        self.all_data = all_data
+        self.val_mask = val_mask
+        self.prepared = False
 
-    LOG.debug(f" val aggs: {df_info(val)}")
-    val_w_aggs = with_aggregate_series(val.copy())
-    LOG.debug(f" trn aggs: {df_info(trn)}")
-    trn_w_aggs = with_aggregate_series(trn.copy())
-    LOG.debug(f" pred aggs: {df_info(pred)}")
-    pred_w_aggs = with_aggregate_series(pred)
-    LOG.debug(" score")
-    score = wrmsse_total(
-        trn_w_aggs,
-        val_w_aggs,
-        pred_w_aggs
-    )
-    return score
+    @timeit(log_time = timings)
+    def calculate_wrmsse(self, learn):
+        self._prepare()
+
+        rec = learn.recorder
+        preds, y_val = learn.get_preds(DatasetType.Valid)
+        learn.recorder = rec
+
+        _transform_target(preds, df=self.pred)
+
+        LOG.debug(f" pred aggs: {df_info(self.pred)}")
+        pred_w_aggs = with_aggregate_series(self.pred.copy())
+
+        LOG.debug(" score")
+        score = wrmsse_total(
+            self.trn_w_aggs,
+            self.val_w_aggs,
+            pred_w_aggs
+        )
+        return score
+
+    def _prepare(self):
+        if self.prepared:
+            return
+
+        trn = self.all_data[~self.val_mask]
+        val = self.all_data[self.val_mask]
+
+        LOG.debug(f" trn aggs: {df_info(trn)}")
+        self.trn_w_aggs = with_aggregate_series(trn.copy())
+
+        LOG.debug(f" val aggs: {df_info(val)}")
+        self.val_w_aggs = with_aggregate_series(val.copy())
+
+        self.pred = val.copy()
+        self.prepared = True
+
 
 from fastai.callbacks import *
 # mega workaroundish way of plugging a metric func designed to work with all the data to run after each epoch 
@@ -288,10 +319,9 @@ from fastai.callbacks import *
 class MyMetrics(LearnerCallback):
     # should run before the recorder
     _order = -30
-    def __init__(self, learn, trn, val):
+    def __init__(self, learn, wrmsse_context):
         super().__init__(learn)
-        self.trn = trn
-        self.val = val
+        self.wrmsse_context = wrmsse_context
         self.learn = learn
 
     def on_train_begin(self, **kwargs):
@@ -302,11 +332,7 @@ class MyMetrics(LearnerCallback):
         LOG.debug("Epoch done, about to score wrmsse")
         # TODO: collect progress for a single val batch and make it available for display
         # display(pd.DataFrame({'y_pred': y, 'y_val': val['sales_dollars']}).transpose())
-        rec = self.learn.recorder
-        preds, y_val = self.learn.get_preds(DatasetType.Valid)
-        LOG.debug(f"Preds: {len(preds)}, {preds.element_size()*preds.nelement()} bytes, y_val: {y_val.element_size()*y_val.nelement()}")
-        self.learn.recorder = rec
-        score = _wrmsse(preds, self.val, self.trn)
+        score = self.wrmsse_context.calculate_wrmsse(self.learn)
         return {'last_metrics': last_metrics + [score]}
     
 class SingleBatchProgressTracker(LearnerCallback):
@@ -330,42 +356,51 @@ class SingleBatchProgressTracker(LearnerCallback):
         score = self.metric(self.y_true, y_model)
         return {'last_metrics': last_metrics + [score]}
 
+def log_mem(name, obj):
+    LOG.debug(f"mem ({name}): {sys.getsizeof(obj) / 1024 / 1024:.1f} MiB")
+
 @timeit(log_time = timings)
 def model_as_tabular(df_sales_train_melt):
     prefiltered = df_sales_train_melt.reset_index(drop=True)
+    log_mem("prefiltered", prefiltered)
+    log_mem("df_sales_train_melt", df_sales_train_melt)
     valid_idx = np.flatnonzero(prefiltered['day_id'] > trn_days)
 
     # TODO: this in fact is fragile and won't work without reset index above, can I do this differently?
     val_mask = prefiltered.index.isin(valid_idx)
-    val = prefiltered[val_mask]
-    trn = prefiltered[~val_mask]
-    LOG.debug(f"sample: {len(df_sales_train_melt)} prefiltered: {len(prefiltered)} trn: {len(trn)} val: {len(val)}")
+    wrmsse_context = WrmsseContext(prefiltered, val_mask)
+    val_count = val_mask.sum()
+    trn_count = len(prefiltered)-val_count
+    LOG.debug(f"sample: {len(df_sales_train_melt)} prefiltered: {len(prefiltered)} trn: {trn_count} val: {val_count}")
 
     _report_metrics({
         "trn_examples": len(df_sales_train_melt),
-        "trn_examples_filtered": len(prefiltered),
-        "val_examples": len(val)
+        "trn_examples_filtered": trn_count,
+        "val_examples": val_count
     })
 
-    my_metrics_cb = partial(MyMetrics, val=val, trn=trn)
+    if per_epoch_wrmsse:
+        my_metrics_cb = partial(MyMetrics, wrmsse_context=wrmsse_context)
+        callback_fns.append(my_metrics_cb)
+
     single_batch_metric = partial(SingleBatchProgressTracker, metric=rmse, metric_name='example_batch_rmse')
 
     procs = [FillMissing, Categorify, Normalize]
     dep_var = 'sales_dollars'
     cat_names = ['item_id', 'dept_id', 'cat_id', 'store_id', 'state_id', 'month_id', 'id', 'snap_flag']
-    cols = cat_names + ['sell_price'] + [dep_var]
+    cont_names = ['sell_price']
+    cols = cat_names + cont_names + [dep_var]
 
     path = tmp_dir
-    data = TabularDataBunch.from_df(path, prefiltered[cols], dep_var, valid_idx=valid_idx,
+    data = TabularDataBunch.from_df(path, prefiltered, dep_var, valid_idx=valid_idx,
                                     bs=batch_size,
                                     num_workers=dataloader_num_workers,
-                                    procs=procs, cat_names=cat_names,
+                                    procs=procs, cat_names=cat_names, cont_names=cont_names,
                                     device=device)
 
     sales_range = df_sales_train_melt.agg({dep_var: ['min', 'max']})
     learn = tabular_learner(data, layers=[200,200,20,20,1], emb_szs=None, metrics=[rmse], 
                         y_range=sales_range[dep_var].values, callback_fns=[
-                            my_metrics_cb, 
                             single_batch_metric] + callback_fns,
                         use_bn=True,
                         wd=0)
@@ -397,7 +432,7 @@ def model_as_tabular(df_sales_train_melt):
     3         23.099392   17.516432   4.008787                 00:00                                                                                      
     4         17.082275   17.641117   4.019526                 00:00 
     """
-    return learn, trn, val
+    return learn, prefiltered, val_mask
 
 def extract_id_columns(t):
     extracted = t['id'].str.extract('([A-Z]+)_(\\d)_(\\d{3})_([A-Z]{2})_(\d)')
@@ -459,6 +494,26 @@ def push_timings_to_wandb():
     wandb.log({
         f'time_{k}': v for (k,v) in timings.items()
     })
+
+@timeit(log_time = timings)
+def log_memory():
+    snapshot = tracemalloc.take_snapshot()
+    snapshot = snapshot.filter_traces([
+        tracemalloc.Filter(inclusive=True, filename_pattern="*pipeline*"),
+        tracemalloc.Filter(inclusive=True, filename_pattern="*ivan*")
+    ])
+    top_stats = snapshot.statistics('traceback')
+    LOG.debug("====== Memory summary  =====")
+    for stat in top_stats[:10]:
+        LOG.debug(stat)
+
+    LOG.debug("====== Memory tracebacks =====")
+    for stat in top_stats[:10]:
+        LOG.debug(f"# {stat}")
+        LOG.debug("%s memory blocks: %.1f MiB" % (stat.count, stat.size / 1024 / 1024))
+        for line in stat.traceback.format():
+            LOG.debug(line)
+        LOG.debug("")
     
 def run_pipeline():
     # TODO: all of this preprocessing ought to happen once and than sampling can use that final dataframe
@@ -475,7 +530,7 @@ def run_pipeline():
     if do_submit:
         submission = to_submission(learn, submission_template)
         submission.to_csv(f'{out_dir}/submissions/0500-fastai-pipeline.csv', index=False)
-        
+    log_memory()
     push_timings_to_wandb()
         
     return learn, trn, val
@@ -484,7 +539,7 @@ if do_run_pipeline:
     LOG.info("Running pipeline")
     try:
         run_pipeline()
-    except Error as err:
+    except Exception as err:
         import traceback
         LOG.error(f"Caught exception: {err}")
         LOG.error(traceback.format_exc())
