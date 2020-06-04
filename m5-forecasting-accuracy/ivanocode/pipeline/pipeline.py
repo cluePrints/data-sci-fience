@@ -445,20 +445,24 @@ def extract_id_columns(t):
 
 @memory.cache
 @timeit(log_time = timings)
-def get_submission_template_melt(df_sales_train_melt):
+def get_submission_template_melt(d_1_date=pd.to_datetime('2016-06-20')):
     df_sample_submission = pd.read_csv(f'{raw}/sample_submission.csv')
-    df_sample_submission.head()
 
     from datetime import timedelta
-    d_1_date = pd.to_datetime(df_sales_train_melt['day_date'].max())
-    # TODO: for evaluation rows these dates should be one month later
     mapping = {f'F{day}':(d_1_date + timedelta(days=day)).date() for day in range(1,29)}
     mapping['id'] = 'id'
     df_sample_submission.columns = df_sample_submission.columns.map(mapping)
     df_sample_submission_melt = df_sample_submission.melt(id_vars='id', var_name='day', value_name='sales')
 
-    last_prices = df_sales_train_melt[['id', 'sell_price']].groupby('id').tail(1)
-    last_prices.head(1)
+    last_prices = pd.read_csv(f'{raw}/sell_prices.csv')
+    max_week = last_prices['wm_yr_wk'].max()
+    last_prices = last_prices.query('wm_yr_wk == @max_week').copy()
+    last_prices['id'] = last_prices['item_id'] + '_' + last_prices['store_id']
+    last_prices_v = last_prices.copy()
+    last_prices_e = last_prices
+    last_prices_e['id'] = last_prices_e['id'] + '_evaluation'
+    last_prices_v['id'] = last_prices_v['id'] + '_validation'
+    last_prices = pd.concat([last_prices_e, last_prices_v], axis=0)[['id', 'sell_price']]    
 
     df_sample_submission_melt = df_sample_submission_melt.merge(
         last_prices, on='id', how='left', validate='many_to_one')
@@ -514,17 +518,58 @@ def log_memory():
         for line in stat.traceback.format():
             LOG.debug(line)
         LOG.debug("")
+
+def setup_dataframe_copy_logging():
+    if not '_original_copy' in dir(pd.DataFrame):
+        print('Patching up DataFrame.copy')
+        pd.DataFrame._original_copy = pd.DataFrame.copy
+    else:
+        print('Patching up DataFrame.copy :: already done - skipping.')
+
+    def _loud_copy(self, deep=True):
+        LOG.debug(f'Copying {sys.getsizeof(self) / 1024 / 1024:.1f} MiB (deep={deep})')
+        return pd.DataFrame._original_copy(self, deep)
+
+    pd.DataFrame.copy = _loud_copy
+
+setup_dataframe_copy_logging()
+
+def reproducibility_mode():
+    if not reproducibility:
+        LOG.info(f"Reproducibility mode OFF")
+        return
+
+    global dataloader_num_workers
+    seed = 42
+
+    LOG.info(f"Reproducibility mode ON (seed: {seed})")
+    dataloader_num_workers = 0
+
+    # python RNG
+    import random
+    random.seed(seed)
+
+    # pytorch RNGs
+    import torch
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+
+    # numpy RNG
+    import numpy as np
+    np.random.seed(seed)
     
 def run_pipeline():
     # TODO: all of this preprocessing ought to happen once and than sampling can use that final dataframe
     reproducibility_mode()
+    setup_dataframe_copy_logging()
     sales_series = read_series_sample(n_sample_series)
     sales_series = melt_sales_series(sales_series)
     sales_series = extract_day_ids(sales_series)
     sales_series = join_w_calendar(sales_series)
     sales_series = join_w_prices(sales_series)
     submission_template = get_submission_template_melt(
-        sales_series[['id', 'sell_price', 'day_date']]
+        d_1_date=pd.to_datetime('2016-06-20')
     )
     learn, trn, val = model_as_tabular(sales_series)
     if do_submit:
