@@ -1,5 +1,6 @@
-from ivanocode.pipeline.pipeline import timeit, timings, read_series_sample, melt_sales_series, extract_day_ids, join_w_calendar, join_w_prices, reproducibility_mode, out_dir, raw, LOG, n_sample_series
+from ivanocode.pipeline.pipeline import timeit, timings, read_series_sample, melt_sales_series, extract_day_ids, join_w_calendar, join_w_prices, reproducibility_mode, out_dir, raw, LOG, n_sample_series, get_submission_template_melt, force_data_prep
 
+import numpy as np
 from petastorm import make_batch_reader, TransformSpec
 from petastorm.pytorch import DataLoader as PetaDataLoader
 from torch.utils.data import TensorDataset, DataLoader as TorchDataLoader, IterableDataset
@@ -103,11 +104,16 @@ class MyIterableDataset(IterableDataset):
                     loader.reader.dataset.fs.open = pre_open_fds
                 for batch in loader:
                     count_batches += 1
-                    for price, sales_dollars in zip(batch['sell_price'], batch['sales_dollars']):
+                    # TODO: propagate petaloader's batches without breaking them into individual items
+                    for idx in range(len(batch['sell_price'])):
+                        price         = batch['sell_price'][idx]
+                        sales_dollars = batch['sales_dollars'][idx] if ('sales_dollars' in batch) else -1.
                         price_is_nan = math.isnan(price)
+                        # TODO: this starts to look like feature extraction, doesn't belong here
                         price_or_zero = 0. if price_is_nan else price
                         count_cells += 1
-                        yield {'features': tensor([price_or_zero, price_is_nan]),
+                        # float32 needed for pytorch downstream
+                        yield {'features': tensor([price_or_zero, price_is_nan], dtype=torch.float32),
                                'targets': tensor([sales_dollars])}
                         
             print(f'Done iterating: {count_batches} batches / ({count_cells} cells) ')
@@ -115,7 +121,7 @@ class MyIterableDataset(IterableDataset):
             raise ValueError("Not implemented for multithreading")
 
 @timeit(log_time = timings)
-def to_parquet(sales_series):
+def to_parquet(sales_series, name):
     encoders = {}
     sales_series['parquet_partition'] = np.random.randint(1, 300, sales_series.shape[0]).astype('uint8')
     from sklearn.preprocessing import LabelEncoder
@@ -142,16 +148,56 @@ def to_parquet(sales_series):
 
     # TODO: uint -> int, category/object -> int, day_date -> drop
     sales_series.to_parquet(
-        f'{processed}/sales_series_melt.parquet',
+        f'{processed}/{name}',
         index=False,
         partition_cols=['parquet_partition'],
         row_group_size=1000
     )
 
+@timeit(log_time = timings)
+def load_encoders():
+    processed = 'processed'
+    from sklearn.preprocessing import LabelEncoder
+    import numpy as np
+    def _load(fn):
+        l = LabelEncoder()
+        l.classes_ = np.load(f'{processed}/{fn}', allow_pickle=True)
+        return l
 
+    encoders_paths = filter(lambda p: p.endswith('.npy'), os.listdir(processed))
+    encoders = {fn[:-len('.npy')]:_load(fn) for fn in encoders_paths}
+
+    return encoders
+
+@timeit(log_time = timings)
+def encode(me):
+    encoders = load_encoders()
+    continuous_cols = ['sell_price']
+
+    for col in me.columns:
+        dtype_str = str(me[col].dtype)
+        if col in continuous_cols:
+            LOG.debug(f"Encoding {col} ({dtype_str}) as float32 just in case for pytorch")
+            me[col] = me[col].astype('float32')
+            continue
+
+        LOG.debug(f"Encoding {col} ({dtype_str}) as categorical ")
+
+        unlabelable = ~me[col].isin(encoders[col].classes_)
+        unlabelable_count = unlabelable.sum()
+        if unlabelable_count > 0:
+            default_label = encoders[col].classes_[0]
+            LOG.warning(f"{unlabelable_count} entries for {col} can't be labeled. Defaulting to {default_label} e.g.\n {me[unlabelable][col][:3].values}")
+            me.loc[unlabelable, col] = default_label
+
+        me[col] = encoders[col].transform(me[col])
+
+    return me
+
+@timeit(log_time = timings)
 def prepare_data():
     expected_path = f'{processed}/sales_series_melt.parquet'
-    if os.path.exists(expected_path):
+    if os.path.exists(expected_path) and not force_data_prep:
         LOG.info(f'Found parquet file ({expected_path})- skipping the prep')
         return
 
@@ -162,7 +208,17 @@ def prepare_data():
     sales_series = extract_day_ids(sales_series)
     sales_series = join_w_calendar(sales_series)
     sales_series = join_w_prices(sales_series)
-    to_parquet(sales_series)
+    to_parquet(sales_series, 'sales_series_melt.parquet')
+
+def prepare_test_data():
+    expected_path = f'{processed}/test_series_melt.parquet'
+    if os.path.exists(expected_path) and not force_data_prep:
+        LOG.info(f'Found parquet file ({expected_path})- skipping the prep')
+        return
+
+    test_data = get_submission_template_melt()
+    test_data = encode(test_data)
+    to_parquet(test_data, 'test_series_melt.parquet')
 
 class Net(nn.Sequential):
     def __init__(self, num_features):
@@ -190,25 +246,26 @@ def do_train():
 
     train_ds = MyIterableDataset(f'file:{processed}/sales_series_melt.parquet/parquet_partition=2')
     valid_ds = MyIterableDataset(f'file:{processed}/sales_series_melt.parquet/parquet_partition=1')
+    test_ds  = MyIterableDataset(f'file:{processed}/test_series_melt.parquet')
 
     train_dl = TorchDataLoader(train_ds, batch_size=batch, shuffle=False, num_workers=0, drop_last=False)
     valid_dl = TorchDataLoader(valid_ds, batch_size=batch, shuffle=False, num_workers=0, drop_last=False)
+    test_dl  = TorchDataLoader(test_ds,  batch_size=batch, shuffle=False, num_workers=0, drop_last=False)
 
     data = OrderedDict()
     data["train"] = train_dl
     data["valid"] = valid_dl
+    data["test"]  = test_dl
 
-    model = Net(num_features=2)
+    model = Net(num_features = 2)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
     criterion = MyLoss()
     runner = SupervisedRunner()
 
-    trn_batch = next(iter(train_dl))
-    LOG.debug(f"Trn loss @ init {model.forward(trn_batch['features']).transpose(1, 0)}")
-
-    val_batch = next(iter(valid_dl))
-    LOG.debug(f"Val loss @ init {model.forward(val_batch['features']).transpose(1, 0)}")
+    for key, dl in data.items():
+        batch = next(iter(dl))
+        LOG.debug(f"{key} model out @ init {model.forward(batch['features']).transpose(1, 0)}")
 
     LOG.debug("Starting training")
     runner.train(
@@ -220,10 +277,11 @@ def do_train():
         load_best_on_end=True,
         num_epochs=1)
 
-    LOG.debug(f"Trn loss @ exit {model.forward(trn_batch['features']).transpose(1, 0)}")
-
-    LOG.debug(f"Val loss @ exit {model.forward(val_batch['features']).transpose(1, 0)}")
+    for key, dl in data.items():
+        batch = next(iter(dl))
+        LOG.debug(f"{key} model out @ exit {model.forward(batch['features']).transpose(1, 0)}")
 
 reproducibility_mode()
+prepare_test_data()
 prepare_data()
 do_train()

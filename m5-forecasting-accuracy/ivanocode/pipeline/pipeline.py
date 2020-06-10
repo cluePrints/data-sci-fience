@@ -41,6 +41,7 @@ memory = Memory(location=None, verbose=joblib_verbosity)
 do_submit        = bool(os.environ.get('PREPARE_SUBMIT',       'false').lower() == 'true')
 lr_find          = bool(os.environ.get('LR_FIND',              'false').lower() == 'true')
 force_gpu_use    = bool(os.environ.get('FORCE_GPU_USE',        'false').lower() == 'true')
+force_data_prep  = bool(os.environ.get('FORCE_DATA_PREP',      'false').lower() == 'true')
 use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB',   'false').lower() == 'true')
 do_run_pipeline  = bool(os.environ.get('RUN_PIPELINE',         'false').lower() == 'true')
 reproducibility  = bool(os.environ.get('REPRODUCIBILITY_MODE', 'true' ).lower() == 'true')
@@ -460,6 +461,7 @@ def get_submission_template_melt(d_1_date=pd.to_datetime('2016-06-20')):
     last_prices['id'] = last_prices['item_id'] + '_' + last_prices['store_id']
     last_prices_v = last_prices.copy()
     last_prices_e = last_prices
+
     last_prices_e['id'] = last_prices_e['id'] + '_evaluation'
     last_prices_v['id'] = last_prices_v['id'] + '_validation'
     last_prices = pd.concat([last_prices_e, last_prices_v], axis=0)[['id', 'sell_price']]    
@@ -468,6 +470,8 @@ def get_submission_template_melt(d_1_date=pd.to_datetime('2016-06-20')):
         last_prices, on='id', how='left', validate='many_to_one')
 
     df_sample_submission_melt = extract_id_columns(df_sample_submission_melt)
+    df_sample_submission_melt.drop(['sales'], axis=1, inplace=True)
+    df_sample_submission_melt.rename({'day': 'date'}, axis=1, inplace=True)
     return df_sample_submission_melt
 
 @timeit(log_time = timings)
@@ -521,10 +525,10 @@ def log_memory():
 
 def setup_dataframe_copy_logging():
     if not '_original_copy' in dir(pd.DataFrame):
-        print('Patching up DataFrame.copy')
+        LOG.debug('Patching up DataFrame.copy')
         pd.DataFrame._original_copy = pd.DataFrame.copy
     else:
-        print('Patching up DataFrame.copy :: already done - skipping.')
+        LOG.debug('Patching up DataFrame.copy :: already done - skipping.')
 
     def _loud_copy(self, deep=True):
         LOG.debug(f'Copying {sys.getsizeof(self) / 1024 / 1024:.1f} MiB (deep={deep})')
