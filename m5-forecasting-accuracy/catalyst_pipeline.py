@@ -51,8 +51,6 @@ def patch_leaking_fd():
 
 patch_leaking_fd()
 
-
-
 class MyIterableDataset(IterableDataset):
     def __init__(self, filename, rex=None):
         super(MyIterableDataset).__init__()
@@ -130,7 +128,7 @@ class MyIterableDataset(IterableDataset):
 @timeit(log_time = timings)
 def to_parquet(sales_series, file_name):
     encoders = {}
-    sales_series['parquet_partition'] = [f"{n:04}" for n in np.random.randint(0, 1000, sales_series.shape[0])]
+    sales_series['parquet_partition'] = [f"{n:04}" for n in np.random.randint(0, 100, sales_series.shape[0])]
     if 'day_date' in sales_series.columns:
         LOG.debug(f"Dropping 'day_date' from {sales_series.columns}")
         sales_series.drop(['day_date'], axis=1, inplace=True)
@@ -256,8 +254,8 @@ def log_batch(model, data, log_stage):
 def setup_data_loaders():
     batch = 128
 
-    train_ds = MyIterableDataset(f'file:{processed}/sales_series_melt.parquet', '.*parquet_partition=(?!10).*')
-    valid_ds = MyIterableDataset(f'file:{processed}/sales_series_melt.parquet', '.*parquet_partition=10.*')
+    train_ds = MyIterableDataset(f'file:{processed}/sales_series_melt.parquet', '.*parquet_partition=(?!1).*')
+    valid_ds = MyIterableDataset(f'file:{processed}/sales_series_melt.parquet', '.*parquet_partition=1.*')
     test_ds  = MyIterableDataset(f'file:{processed}/test_series_melt.parquet')
 
     train_dl = TorchDataLoader(train_ds, batch_size=batch, shuffle=False, num_workers=0, drop_last=False)
@@ -285,7 +283,7 @@ def do_train(data):
         criterion=criterion,
         optimizer=optimizer,
         loaders=data,
-        logdir="run",
+        logdir=f"{log_dir}/run",
         load_best_on_end=True,
         num_epochs=1)
 

@@ -12,16 +12,19 @@ import logging
 import datetime
 import io
 import tracemalloc
+import wandb
+
+import dask.dataframe as dd
 
 tracemalloc.start()
 
 print("Parsing args")
 raw = os.environ.get('DATA_RAW_DIR', 'raw')
-processed = 'processed'
-submissions = 'submissions'
+processed = os.environ.get('PROCESSED_DIR', './processed')
+submissions = os.environ.get('SUBMISSIONS_DIR', './submissions')
 tmp_dir = './tmp'
 out_dir = os.environ.get('OUT_DIR', '.')
-log_dir = os.environ.get('LOG_DIR', '.')
+log_dir = os.environ.get('LOG_DIR', './tmp')
 log_lvl = os.environ.get('LOG_LEVEL', 'DEBUG')
 con_log_lvl = os.environ.get('CONSOLE_LOG_LEVEL', 'DEBUG')
 
@@ -43,7 +46,6 @@ lr_find          = bool(os.environ.get('LR_FIND',              'false').lower() 
 force_gpu_use    = bool(os.environ.get('FORCE_GPU_USE',        'false').lower() == 'true')
 force_data_prep  = bool(os.environ.get('FORCE_DATA_PREP',      'false').lower() == 'true')
 use_wandb        = bool(os.environ.get('PUSH_METRICS_WANDB',   'false').lower() == 'true')
-do_run_pipeline  = bool(os.environ.get('RUN_PIPELINE',         'false').lower() == 'true')
 reproducibility  = bool(os.environ.get('REPRODUCIBILITY_MODE', 'true' ).lower() == 'true')
 per_epoch_wrmsse = bool(os.environ.get('PER_EPOCH_WRMSSE',     'false').lower() == 'true')
 
@@ -70,7 +72,15 @@ def configure_logging():
 
     return log
 
+
 LOG = configure_logging()
+
+def setup_dirs(LOG):
+    for d in [out_dir, log_dir, processed, submissions]:
+        LOG.debug(f"mkdir: {d}")
+        os.makedirs(d, exist_ok=True)
+
+setup_dirs(LOG)
 
 dataloader_num_workers = 8
 callback_fns = []
@@ -178,7 +188,12 @@ def read_series_sample(n = 10):
     # header
     sample_idx.add(0)
 
-    return pd.read_csv(f'{raw}/sales_train_validation.csv', skiprows = lambda i: i not in sample_idx)
+    #import pdb; pdb.set_trace()
+    return dd.read_csv(
+        f'{raw}/sales_train_validation.csv',
+#  TODO:       skiprows = sample_idx,
+        sample=64000000
+    )
 
 @memory.cache
 @timeit(log_time = timings)
@@ -240,7 +255,8 @@ def join_w_calendar(df_sales_train_melt):
     df_sales_train_melt =  df_sales_train_melt.merge(
         df_calendar_melt[['date', 'state_id', 'wm_yr_wk', 'snap_flag']],
         left_on=['day_date_str', 'state_id'], right_on=['date', 'state_id'],
-        validate='many_to_one')
+#  TODO: dask does not seem to support these       validate='many_to_one'
+        )
 
     df_sales_train_melt['wm_yr_wk'] = df_sales_train_melt['wm_yr_wk'].astype('int16')
     return df_sales_train_melt
@@ -256,7 +272,9 @@ def join_w_prices(partition):
     )
     partition['sell_price'] = partition['sell_price'].astype('float32')
     partition['sales_dollars'] = (partition['sales'] * partition['sell_price']).astype('float32')
-    partition.fillna({'sales_dollars': 0}, inplace=True)
+    partition = partition.fillna({'sales_dollars': 0}
+    # TODO: doesn't seem to be supported by dask, inplace=True
+    )
     return partition
 
 from fastai.tabular import *
@@ -498,30 +516,9 @@ def push_timings_to_wandb():
     if not use_wandb:
         return;
 
-    import wandb
     wandb.log({
         f'time_{k}': v for (k,v) in timings.items()
     })
-
-@timeit(log_time = timings)
-def log_memory():
-    snapshot = tracemalloc.take_snapshot()
-    snapshot = snapshot.filter_traces([
-        tracemalloc.Filter(inclusive=True, filename_pattern="*pipeline*"),
-        tracemalloc.Filter(inclusive=True, filename_pattern="*ivan*")
-    ])
-    top_stats = snapshot.statistics('traceback')
-    LOG.debug("====== Memory summary  =====")
-    for stat in top_stats[:10]:
-        LOG.debug(stat)
-
-    LOG.debug("====== Memory tracebacks =====")
-    for stat in top_stats[:10]:
-        LOG.debug(f"# {stat}")
-        LOG.debug("%s memory blocks: %.1f MiB" % (stat.count, stat.size / 1024 / 1024))
-        for line in stat.traceback.format():
-            LOG.debug(line)
-        LOG.debug("")
 
 def setup_dataframe_copy_logging():
     if not '_original_copy' in dir(pd.DataFrame):
@@ -579,19 +576,6 @@ def run_pipeline():
     if do_submit:
         submission = to_submission(learn, submission_template)
         submission.to_csv(f'{out_dir}/submissions/0500-fastai-pipeline.csv', index=False)
-    log_memory()
     push_timings_to_wandb()
         
     return learn, trn, val
-
-if do_run_pipeline:
-    LOG.info("Running pipeline")
-    try:
-        run_pipeline()
-    except Exception as err:
-        import traceback
-        LOG.error(f"Caught exception: {err}")
-        LOG.error(traceback.format_exc())
-        raise
-else:
-    LOG.info("Not running pipeline")
