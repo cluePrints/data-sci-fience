@@ -1,6 +1,7 @@
-from ivanocode.pipeline.pipeline import timeit, timings, read_series_sample, melt_sales_series, extract_day_ids, join_w_calendar, join_w_prices, reproducibility_mode, out_dir, raw, LOG, n_sample_series, get_submission_template_melt, force_data_prep
+from ivanocode.pipeline.pipeline import timeit, timings, read_series_sample, melt_sales_series, extract_day_ids, join_w_calendar, join_w_prices, reproducibility_mode, out_dir, log_dir, raw, processed, submissions, LOG, n_sample_series, get_submission_template_melt, force_data_prep, n_total_series
 
 import numpy as np
+from sklearn.preprocessing import LabelEncoder
 from petastorm import make_batch_reader, TransformSpec
 from petastorm.pytorch import DataLoader as PetaDataLoader
 from torch.utils.data import TensorDataset, DataLoader as TorchDataLoader, IterableDataset
@@ -19,7 +20,6 @@ from catalyst.dl import SupervisedRunner
 from catalyst.utils import set_global_seed
 
 FILE_PREFIX = 'file:'
-processed = f'{out_dir}/processed'
 
 pre_open_fds = None
 def patch_leaking_fd():
@@ -39,7 +39,7 @@ def patch_leaking_fd():
 
     pre_open_fds = _bopen
     if not hasattr(ParquetFile, '__old_init__'):
-        print("Patching")
+        LOG.debug("Patching")
         ParquetFile.__old_init__ = ParquetFile.__init__
 
         ParquetFile.__init__ = _patched_init
@@ -47,7 +47,7 @@ def patch_leaking_fd():
         ParquetFile.__del__ = _exit
 
     else:
-        print("Already patched")
+        LOG.debug("Already patched")
 
 patch_leaking_fd()
 
@@ -57,6 +57,8 @@ class MyIterableDataset(IterableDataset):
     def __init__(self, filename, rex=None):
         super(MyIterableDataset).__init__()
         self._filename_param = filename
+        self.rex_param = rex
+        self.filename_param = filename
         self.filename = self._init_filenames(filename, rex)
 
     def _init_filenames(self, filename, rex):
@@ -66,6 +68,7 @@ class MyIterableDataset(IterableDataset):
         filename = filename[len(FILE_PREFIX):]
         if not os.path.isdir(filename):
             raise ValueError(f"Filtering only possible for dirs, {filename} is not a one")
+
         paths = [os.path.join(dp, f) for dp, dn, fn in os.walk(filename) for f in fn]
         res = list(map(
             lambda f: FILE_PREFIX + f,
@@ -74,6 +77,10 @@ class MyIterableDataset(IterableDataset):
         if (len(res) == 0):
             raise ValueError(f"0 files remained out ot {len(paths)} - seems regex is too restrictive")
 
+        if (len(res) == len(paths)):
+            raise ValueError(f"{len(paths)} files remained out ot {len(paths)} - seems regex is a no op")
+
+        LOG.debug(f"{self.filename_param} -> {len(res)} files out of {len(paths)} remained after applying filter ({self.rex_param})")
         return res;
 
     def _init_petaloader(self):
@@ -94,7 +101,7 @@ class MyIterableDataset(IterableDataset):
         return 1913*30490 # can be arbitrary large value to prevent WARN logs, seem to be ignored anyway
 
     def __iter__(self):
-        print(f"Iterator created on {self._filename_param}")
+        LOG.debug(f"Iterator created on {self._filename_param}")
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is None:
             count_cells = 0
@@ -116,39 +123,42 @@ class MyIterableDataset(IterableDataset):
                         yield {'features': tensor([price_or_zero, price_is_nan], dtype=torch.float32),
                                'targets': tensor([sales_dollars])}
                         
-            print(f'Done iterating: {count_batches} batches / ({count_cells} cells) ')
+            LOG.debug(f'Done iterating: {count_batches} batches / ({count_cells} cells) ')
         else:
             raise ValueError("Not implemented for multithreading")
 
 @timeit(log_time = timings)
-def to_parquet(sales_series, name):
+def to_parquet(sales_series, file_name):
     encoders = {}
-    sales_series['parquet_partition'] = np.random.randint(1, 300, sales_series.shape[0]).astype('uint8')
-    from sklearn.preprocessing import LabelEncoder
+    sales_series['parquet_partition'] = [f"{n:04}" for n in np.random.randint(0, 1000, sales_series.shape[0])]
     if 'day_date' in sales_series.columns:
+        LOG.debug(f"Dropping 'day_date' from {sales_series.columns}")
         sales_series.drop(['day_date'], axis=1, inplace=True)
 
     for col in sales_series.columns:
         if col in encoders:
-            print(f'{col} already encoded - skipping')
+            LOG.debug(f'Skipping: {col} - already encoded')
             continue
 
-    # petastorm can't read these
-    if str(sales_series[col].dtype) == 'uint8':
-        sales_series[col] = sales_series[col].astype('int')
+        # petastorm can't read these
+        if str(sales_series[col].dtype) == 'uint8':
+            sales_series[col] = sales_series[col].astype('int')
 
-    if str(sales_series[col].dtype) in ['category', 'object']:
-        print(f'{col} - encoding')
-        enc = LabelEncoder()
-        sales_series[col] = enc.fit_transform(sales_series[col])
-        encoders[col] = enc
+        if str(sales_series[col].dtype) in ['category', 'object']:
+            LOG.debug(f'Encoding: {col}')
+            enc = LabelEncoder()
+            sales_series[col] = enc.fit_transform(sales_series[col])
+            encoders[col] = enc
 
     for name, enc in encoders.items():
+        LOG.debug(f"Saving encoder: {name}")
         np.save(f'{processed}/{name}.npy', enc.classes_)
 
     # TODO: uint -> int, category/object -> int, day_date -> drop
+    parquet_file = f'{processed}/{file_name}'
+    LOG.debug(f"Saving to {parquet_file}")
     sales_series.to_parquet(
-        f'{processed}/{name}',
+        parquet_file,
         index=False,
         partition_cols=['parquet_partition'],
         row_group_size=1000
@@ -156,9 +166,6 @@ def to_parquet(sales_series, name):
 
 @timeit(log_time = timings)
 def load_encoders():
-    processed = 'processed'
-    from sklearn.preprocessing import LabelEncoder
-    import numpy as np
     def _load(fn):
         l = LabelEncoder()
         l.classes_ = np.load(f'{processed}/{fn}', allow_pickle=True)
@@ -195,7 +202,7 @@ def encode(me):
     return me
 
 @timeit(log_time = timings)
-def prepare_data():
+def prepare_data_on_disk():
     expected_path = f'{processed}/sales_series_melt.parquet'
     if os.path.exists(expected_path) and not force_data_prep:
         LOG.info(f'Found parquet file ({expected_path})- skipping the prep')
@@ -203,14 +210,14 @@ def prepare_data():
 
     LOG.info(f'Not found parquet file ({expected_path}) - preparing the data')
 
-    sales_series = read_series_sample(n_sample_series)
+    sales_series = read_series_sample(n_total_series)
     sales_series = melt_sales_series(sales_series)
     sales_series = extract_day_ids(sales_series)
     sales_series = join_w_calendar(sales_series)
     sales_series = join_w_prices(sales_series)
     to_parquet(sales_series, 'sales_series_melt.parquet')
 
-def prepare_test_data():
+def prepare_test_data_on_disk():
     expected_path = f'{processed}/test_series_melt.parquet'
     if os.path.exists(expected_path) and not force_data_prep:
         LOG.info(f'Found parquet file ({expected_path})- skipping the prep')
@@ -241,11 +248,16 @@ class MyLoss(nn.MSELoss):
     def forward(self, inp, target):
         return super().forward(inp, target)
 
-def do_train():
+def log_batch(model, data, log_stage):
+   for key, dl in data.items():
+        batch = next(iter(dl))
+        LOG.debug(f"{key} model out @ {log_stage} {model.forward(batch['features']).transpose(1, 0)}")
+
+def setup_data_loaders():
     batch = 128
 
-    train_ds = MyIterableDataset(f'file:{processed}/sales_series_melt.parquet/parquet_partition=2')
-    valid_ds = MyIterableDataset(f'file:{processed}/sales_series_melt.parquet/parquet_partition=1')
+    train_ds = MyIterableDataset(f'file:{processed}/sales_series_melt.parquet', '.*parquet_partition=(?!10).*')
+    valid_ds = MyIterableDataset(f'file:{processed}/sales_series_melt.parquet', '.*parquet_partition=10.*')
     test_ds  = MyIterableDataset(f'file:{processed}/test_series_melt.parquet')
 
     train_dl = TorchDataLoader(train_ds, batch_size=batch, shuffle=False, num_workers=0, drop_last=False)
@@ -257,15 +269,15 @@ def do_train():
     data["valid"] = valid_dl
     data["test"]  = test_dl
 
-    model = Net(num_features = 2)
+    return data
 
+def do_train(data):
+    model = Net(num_features = 2)
+    runner = SupervisedRunner()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
     criterion = MyLoss()
-    runner = SupervisedRunner()
 
-    for key, dl in data.items():
-        batch = next(iter(dl))
-        LOG.debug(f"{key} model out @ init {model.forward(batch['features']).transpose(1, 0)}")
+    log_batch(model, data, "init")
 
     LOG.debug("Starting training")
     runner.train(
@@ -277,11 +289,10 @@ def do_train():
         load_best_on_end=True,
         num_epochs=1)
 
-    for key, dl in data.items():
-        batch = next(iter(dl))
-        LOG.debug(f"{key} model out @ exit {model.forward(batch['features']).transpose(1, 0)}")
+    log_batch(model, data, "exit")
 
 reproducibility_mode()
-prepare_test_data()
-prepare_data()
-do_train()
+prepare_data_on_disk()
+prepare_test_data_on_disk()
+data = setup_data_loaders()
+do_train(data)
