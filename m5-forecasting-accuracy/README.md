@@ -8,6 +8,10 @@
 3. Start an experiment
     gradient experiments run singlenode --optionsFile gradient.yml 
 
-## Unsorted
+# Unsorted
+## Running locally
 
-   pip3 install matplotlib fastai sklearn numpy pandas ipython wandb
+    virtualenv venv
+    source venv/bin/activate
+    cat ../../docker-kaggle-deeplearning-all/requirements.txt | sed 's/+cu101//g' | pip install -r /dev/stdin
+    python3 catalyst_pipeline.py
