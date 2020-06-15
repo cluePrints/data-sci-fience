@@ -25,7 +25,7 @@ experimentEnv:
   WANDB_API_KEY:         71023a8ee6bad8cc2cb5a981eefaa7e88e2e8a9a
   REPRODUCIBILITY_MODE:  false
 
-ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*,wandb/*,venv/*,*.txt'
+ignoreFiles: '.DS_Store,*.parquet,*.feather,*.pkl,*.ipynb,*.pth,*.pkl,*.db*,*.png,*.ini,*.pyc,cache,submissions/*.*,processed/*,tmp/*.*,tmp/*,__pycache__/*,ivanocode/tmp/*,*tmp*,raw/*.*,wandb/*,venv/*,*.txt,tmp,run/*'
 isPreemptible: false
 machineType: P4000
 modelPath: null
