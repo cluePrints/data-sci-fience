@@ -180,20 +180,12 @@ timings = {}
 
 @memory.cache
 @timeit(log_time = timings)
-def read_series_sample(n = 10):
-    indexes = np.arange(1, n_total_series + 1)
-    np.random.shuffle(indexes)
-    sample_idx = set(indexes[:n])
-
-    # header
-    sample_idx.add(0)
-
-    #import pdb; pdb.set_trace()
-    return dd.read_csv(
-        f'{raw}/sales_train_validation.csv',
-#  TODO:       skiprows = sample_idx,
-        sample=64000000
-    )
+def read_series_sample(n):
+    df = dd.read_csv(
+        f'{raw}/sales_train_validation.csv'
+    ).sample(frac = n / n_total_series)
+    LOG.debug(f"Read {len(df)} series")
+    return df
 
 @memory.cache
 @timeit(log_time = timings)

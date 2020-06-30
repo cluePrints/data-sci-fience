@@ -19,12 +19,14 @@ import torch.nn.functional as F
 from catalyst.dl import SupervisedRunner
 from catalyst.utils import set_global_seed
 
+from pyarrow.parquet import ParquetFile, ParquetReader
+import dask.dataframe as dd
+
 FILE_PREFIX = 'file:'
 
 pre_open_fds = None
 def patch_leaking_fd():
     global pre_open_fds
-    from pyarrow.parquet import ParquetFile, ParquetReader
     def _patched_init(self, source, **kwargs):
         self.source = source
         return ParquetFile.__old_init__(self, source, **kwargs)
@@ -127,11 +129,16 @@ class MyIterableDataset(IterableDataset):
 
 @timeit(log_time = timings)
 def to_parquet(sales_series, file_name):
+    LOG.debug('Setting index')
+    sales_series = sales_series.set_index('id')
+    LOG.debug('Setting index - done')
     encoders = {}
-    sales_series['parquet_partition'] = [f"{n:04}" for n in np.random.randint(0, 100, sales_series.shape[0])]
+    #import pdb; pdb.set_trace()
+    # TODO: dask supposedly does this on its own with sensible defaults
+    # sales_series['parquet_partition'] = np.random.randint(0, 100, sales_series.shape[0])
     if 'day_date' in sales_series.columns:
         LOG.debug(f"Dropping 'day_date' from {sales_series.columns}")
-        sales_series.drop(['day_date'], axis=1, inplace=True)
+        sales_series = sales_series.drop(['day_date'], axis=1)
 
     for col in sales_series.columns:
         if col in encoders:
@@ -145,7 +152,8 @@ def to_parquet(sales_series, file_name):
         if str(sales_series[col].dtype) in ['category', 'object']:
             LOG.debug(f'Encoding: {col}')
             enc = LabelEncoder()
-            sales_series[col] = enc.fit_transform(sales_series[col])
+            sales_series[col] = dd.from_array(enc.fit_transform(sales_series[col]))
+            # TODO: update other transforms too!
             encoders[col] = enc
 
     for name, enc in encoders.items():
@@ -195,7 +203,7 @@ def encode(me):
             LOG.warning(f"{unlabelable_count} entries for {col} can't be labeled. Defaulting to {default_label} e.g.\n {me[unlabelable][col][:3].values}")
             me.loc[unlabelable, col] = default_label
 
-        me[col] = encoders[col].transform(me[col])
+        me[col] = dd.from_array(encoders[col].transform(me[col]))
 
     return me
 
@@ -208,7 +216,7 @@ def prepare_data_on_disk():
 
     LOG.info(f'Not found parquet file ({expected_path}) - preparing the data')
 
-    sales_series = read_series_sample(n_total_series)
+    sales_series = read_series_sample(n_sample_series)
     sales_series = melt_sales_series(sales_series)
     sales_series = extract_day_ids(sales_series)
     sales_series = join_w_calendar(sales_series)
