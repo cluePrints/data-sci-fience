@@ -154,7 +154,7 @@ tqdm==4.30.0
 traitlets==4.3.2
 Twisted==19.7.0
 typing==3.6.6
-ujson==1.35
+ujson==5.2.0
 urllib3==1.24.2
 vega==2.6.0
 vega-datasets==0.7.0
