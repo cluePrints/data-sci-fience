@@ -123,7 +123,7 @@ rsa==3.4.2
 s3transfer==0.2.1
 scikit-learn==0.21.3
 scipy==1.2.0
-Scrapy==1.6.0
+Scrapy==2.6.2
 scrapy-selenium==0.0.7
 scrapy-splash==0.7.2
 selenium==3.141.0
