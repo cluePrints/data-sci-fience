@@ -14,7 +14,7 @@ binaryornot==0.4.4
 bleach==3.1.0
 botocore==1.12.202
 Bottleneck==1.2.1
-certifi==2018.11.29
+certifi==2022.12.7
 cffi==1.12.2
 chardet==3.0.4
 chromedriver==2.24.1
